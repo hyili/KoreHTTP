@@ -15,4 +15,8 @@
         - using individual epoll instances to solve lock issue
             - but may encounter issue of imbalanced connection distribution
         - dynamically redistribute the connection to prevent the throuput issue
+    - moduo library implementation
+        - https://cloud.tencent.com/developer/article/1879424
+- log by each thread
+    - according to the run_test, seems like only 1 worker thread is triggered during each round 10 concurrent connections
 - timeout support
