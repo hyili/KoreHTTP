@@ -79,6 +79,7 @@ class WebServer {
      * this function may
      * modify epoll_buffers => but this is only for local thread => it's okay
      * modify waiting_clients => would add client into this map, but the key is fd, and it is auto-increment. is this okay?
+     * modify worker epoll's interest list => would add client into the struct. is this okay?
      */
     void master_thread() {
         server_ready = true;
@@ -111,7 +112,9 @@ class WebServer {
                 // if new client comes in
                 if (currfd == sfd) {
                     // accept clients
-                    // TODO: waiting_clients RACE?? not sure
+                    // TODO: waiting_clients RACE with worker_thread, add client into map => use additional thread-safe queue to pass the request to worker_thread.
+                    // TODO: worker epoll's interest list RACE with worker_thread, add into list => use additional thread-safe queue to pass the request to worker_thread.
+                    // so.. we need a thread-safe queue
                     if ((ret = check_for_client(epoll_worker_fd)) < 0) {
                         // do nothing
                     }
@@ -125,6 +128,7 @@ class WebServer {
      * this function may:
      * modify epoll_buffers => but this is only for local thread => it's okay
      * modify waiting_clients => would remove client from this map, but the key is fd, and it is auto-increment. is this okay?
+     * modify worker epoll's interest list => would remove client from the struct. is this okay?
      */
     void worker_thread() {
         while (!server_ready) sleep(1);
@@ -140,6 +144,7 @@ class WebServer {
             memset(epoll_buffers.get(), 0, sizeof(epoll_buffers.get()));
 
             // if no event is polled back
+            // TODO: worker epoll's interest list, read from list
             if ((num_of_events = wait_for_epoll_events(epoll_info, epoll_buffers.get())) == 0) {
                 cerr << " [*] Nobody comes in. timeout = " << epoll_info.epoll_timeout << ", num_of_events = " << num_of_events << endl;
                 continue;
@@ -149,16 +154,19 @@ class WebServer {
             for (int index = 0; index < num_of_events; index++) {
                 int currfd = epoll_buffers.get()[index].data.fd;
 
+                // TODO: waiting_clients, read client from map
                 if ((ret = check_for_client_request(currfd)) < 0) {
                     // data transmission is not complete
                     if (ret == -2) continue;
                     // error occurred
-                    // TODO: waiting_clients RACE?? not sure
+                    // TODO: waiting_clients RACE with master_thread, remove from map => thread-safe queue would solve this
+                    // TODO: worker epoll's interest list RACE with master_thread and other worker thread, remove from list => thread-safe queue and internal lock would solve this
                     disconnect_client(epoll_worker_fd, currfd);
                 } else {
                     // a client is allowed to send/recv 1 http req/resp each connection
                     // and it's done
-                    // TODO: waiting_clients RACE?? not sure
+                    // TODO: waiting_clients RACE with master_thread, remove from map => thread-safe queue would solve this
+                    // TODO: worker epoll's interest list RACE with master_thread and other worker thread, remove from list => thread-safe queue and internal lock would solve this
                     disconnect_client(epoll_worker_fd, currfd);
                 }
             }

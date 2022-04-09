@@ -154,7 +154,7 @@ int accept_new_client(int sfd, int& cfd, sockaddr* client_addr) {
 }
 
 int create_epoll_instance(int& epollfd) {
-    // prevent leak after using exec*()
+    // EPOLL_CLOEXEC: prevent leak after using exec*()
     if ((epollfd = epoll_create1(EPOLL_CLOEXEC)) == -1) {
         // Detail about epoll error number please refer to manual page
         // https://man7.org/linux/man-pages/man2/epoll_create.2.html

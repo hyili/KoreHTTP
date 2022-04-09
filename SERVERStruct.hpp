@@ -18,5 +18,4 @@ struct EPOLL_INFO {
     size_t epoll_buffers_size;
     uint32_t epoll_timeout;
     uint32_t epoll_event_types;
-    std::unique_ptr<epoll_event[]> epoll_buffers;
 };
