@@ -4,9 +4,7 @@
 #include <regex>
 #include <functional>
 
-#include "HTTPStruct.hpp"
 #include "Utils.hpp"
-#include "Macro.hpp"
 
 using namespace std;
 

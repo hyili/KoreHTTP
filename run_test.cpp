@@ -6,7 +6,7 @@
 using namespace std;
 
 #define NUM_OF_CONNECT 10
-#define NUM_OF_ROUND 5
+#define NUM_OF_ROUND 1
 
 int main(int argc, char** argv) {
     vector<WebClient> WCs = vector<WebClient>(NUM_OF_CONNECT, WebClient(argc, argv));

@@ -1,15 +1,8 @@
 #pragma once
-#include <iostream>
-#include <unordered_map>
-#include <string>
 
 #include "HTTPStruct.hpp"
-
-#include <sys/socket.h>
-#include <sys/types.h>
-#include <sys/epoll.h>
-#include <unistd.h>
-#include <netdb.h>
+#include "SERVERStruct.hpp"
+#include "Macro.hpp"
 
 int parse_parameters(std::unordered_map<std::string, std::string>& config, int argc, char** argv) {
     for (int i = 1; i < argc; i++) {
@@ -178,15 +171,15 @@ int create_epoll_instance(int& epollfd) {
 // EPOLLET(Edge-Trigger): triggers when change state
 // Default(Level-Trigger): triggers when in specified state
 // EPOLLEXCLUSIVE: in multithread scenario, prevent multiple epollfd to be trigger by the same event
-int add_epoll_interest(int epollfd, int fd, uint32_t epoll_event_type) {
+int add_epoll_interest(const EPOLL_INFO& epoll_info, int fd) {
     epoll_event epevent {
-        .events = epoll_event_type,
+        .events = epoll_info.epoll_event_types,
         .data = epoll_data_t {
             .fd = fd
         }
     };
 
-    if (epoll_ctl(epollfd, EPOLL_CTL_ADD, fd, &epevent) == -1) {
+    if (epoll_ctl(epoll_info.epollfd, EPOLL_CTL_ADD, fd, &epevent) == -1) {
         std::cerr << "Error occurred during epoll_ctl(). errno = " << errno << std::endl;
         return -1;
     }
@@ -194,8 +187,8 @@ int add_epoll_interest(int epollfd, int fd, uint32_t epoll_event_type) {
     return 0;
 }
 
-int rm_epoll_interest(int epollfd, int fd) {
-    if (epoll_ctl(epollfd, EPOLL_CTL_DEL, fd, nullptr) == -1) {
+int rm_epoll_interest(const EPOLL_INFO& epoll_info, int fd) {
+    if (epoll_ctl(epoll_info.epollfd, EPOLL_CTL_DEL, fd, nullptr) == -1) {
         std::cerr << "Error occurred during epoll_ctl(). errno = " << errno << std::endl;
         return -1;
     }
@@ -204,10 +197,10 @@ int rm_epoll_interest(int epollfd, int fd) {
 }
 
 //
-int wait_for_epoll_events(int epollfd, epoll_event* buffer, int max_event, int timeout) {
+int wait_for_epoll_events(const EPOLL_INFO& epoll_info, epoll_event* epoll_buffers) {
     int num_of_events;
 
-    if ((num_of_events = epoll_wait(epollfd, buffer, max_event, timeout)) == -1) {
+    if ((num_of_events = epoll_wait(epoll_info.epollfd, epoll_buffers, epoll_info.epoll_buffers_size, epoll_info.epoll_timeout)) == -1) {
         std::cerr << "Error occurred during epoll_wait(). errno = " << errno << std::endl;
         return -1;
     }
