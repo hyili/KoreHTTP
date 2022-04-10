@@ -22,10 +22,8 @@ namespace server {
         uint32_t num_of_connection;
         uint32_t max_num_of_connection;
         uint32_t num_of_workers;
-        generic::SIMPLE_HTTP_REQ req_struct;
-        generic::SIMPLE_HTTP_RESP resp_struct;
-        function<int(CLIENT_INFO&, generic::SIMPLE_HTTP_REQ&, int)> req_handler;
-        function<int(CLIENT_INFO&, generic::SIMPLE_HTTP_RESP&, int)> resp_handler;
+        function<int(const CLIENT_INFO&, CLIENT_BUFFER&, int)> req_handler;
+        function<int(const CLIENT_INFO&, CLIENT_BUFFER&, int)> resp_handler;
     
         void process() {
             int num_of_events = 0, ret;
@@ -182,7 +180,6 @@ namespace server {
             num_of_connection += 1;
             waiting_clients[cfd] = {
                 .cfd = cfd,
-                .buffer = "",
                 .client_addr = client_addr
             };
     
@@ -235,7 +232,7 @@ namespace server {
             int flags = MSG_DONTWAIT;
             CLIENT_INFO& client_info = waiting_clients[cfd];
     
-            if ((ret = req_handler(client_info, req_struct, flags)) < 0) {
+            if ((ret = req_handler(client_info, client_info.client_buffer, flags)) < 0) {
                 if (ret == -1) {
                     cerr << " [X] Connection to client closed. ip: " << inet_ntoa(client_info.client_addr.sin_addr) << ", port: " << client_info.client_addr.sin_port << endl;
                     return -1;
@@ -243,12 +240,10 @@ namespace server {
                 return ret;
             }
             
-            show_req(req_struct);
-    
-            string resp;
-            resp += "Data in file: " + req_struct.req_path + "\n";
-            generic::SIMPLE_HTTP_RESP resp_struct{.data = resp};
-            if (resp_handler(waiting_clients[cfd], resp_struct, flags) < 0) {
+            show_req(client_info.client_buffer.req_struct);
+            client_info.client_buffer.resp_struct.data = "Data in file: " + client_info.client_buffer.req_struct.req_path + "\n";
+
+            if (resp_handler(client_info, client_info.client_buffer, flags) < 0) {
                 if (ret == -1) {
                     cerr << " [X] Connection to client closed. ip: " << inet_ntoa(client_info.client_addr.sin_addr) << ", port: " << client_info.client_addr.sin_port << endl;
                     return ret;
@@ -271,7 +266,7 @@ namespace server {
                 exit(-1);
             }
     
-            req_handler = [](CLIENT_INFO& client_info, generic::SIMPLE_HTTP_REQ (&req_struct), int flags) -> int {
+            req_handler = [](const CLIENT_INFO& client_info, CLIENT_BUFFER& client_buffer, int flags) -> int {
                 char buffer[BUFFER_SIZE] = {};
                 int ret;
                 regex rule("(GET|POST|PUT|DELETE) (/[^ ]*) (HTTP/[0-9\\.]+)\n");
@@ -286,15 +281,15 @@ namespace server {
                         cerr << "Error occurred during recv(). errno = " << errno << endl;
                         return -1;
                     }
-                    client_info.buffer += buffer;
+                    client_buffer.buffer += buffer;
                     memset(buffer, 0, BUFFER_SIZE);
     
                     // if not a valid message
                     // use search not match here to keep find new request coming (ignore the invalid)
-                    if (!regex_search(client_info.buffer, sm, rule)) continue;
+                    if (!regex_search(client_buffer.buffer, sm, rule)) continue;
     
                     // split the request, and fill into req_struct
-                    req_struct = {
+                    client_buffer.req_struct = {
                         .version = sm[3],
                         .req_path = sm[2],
                         .method = sm[1]
@@ -308,10 +303,11 @@ namespace server {
                 return 0;
             };
     
-            resp_handler = [](CLIENT_INFO& client_info, generic::SIMPLE_HTTP_RESP &resp_struct, int flags) -> int {
+            resp_handler = [](const CLIENT_INFO& client_info, CLIENT_BUFFER& client_buffer, int flags) -> int {
                 int ret;
-    
-                ret = send(client_info.cfd, resp_struct.data.c_str(), resp_struct.data.size(), flags);
+                const string data = client_buffer.resp_struct.data;
+
+                ret = send(client_info.cfd, data.c_str(), data.size(), flags);
                 if (ret == -1) {
                     if (errno = EAGAIN || errno == EWOULDBLOCK) {
                         // TODO: check how NON-BLOCKING send works
