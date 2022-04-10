@@ -11,7 +11,13 @@
 
 #include <arpa/inet.h>
 
-#define BUFFER_SIZE 1024
-#define PROCESS_MODE 3
-#define MASTER_MODE 1
-#define WORKER_MODE 2
+namespace server {
+    #define BUFFER_SIZE 1024
+    #define PROCESS_MODE 3
+    #define MASTER_MODE 1
+    #define WORKER_MODE 2
+}
+
+namespace client {
+    #define BUFFER_SIZE 1024
+}

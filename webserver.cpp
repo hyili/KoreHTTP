@@ -4,7 +4,7 @@
 using namespace std;
 
 int main(int argc, char** argv) {
-    WebServer WS = WebServer(argc, argv);
+    server::WebServer WS = server::WebServer(argc, argv);
     cout << "Initializing..." << endl;
     if (WS.init() == -1) return -1;
     cout << "Start!" << endl;

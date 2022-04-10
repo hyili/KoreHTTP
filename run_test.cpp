@@ -9,7 +9,7 @@ using namespace std;
 #define NUM_OF_ROUND 1
 
 int main(int argc, char** argv) {
-    vector<WebClient> WCs = vector<WebClient>(NUM_OF_CONNECT, WebClient(argc, argv));
+    vector<client::WebClient> WCs = vector<client::WebClient>(NUM_OF_CONNECT, client::WebClient(argc, argv));
 
     for (int i = 0; i < NUM_OF_ROUND; i++) {
         cout << "Round No." << i << endl;

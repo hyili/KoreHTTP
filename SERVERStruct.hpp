@@ -7,15 +7,17 @@
 #include <unistd.h>
 #include <netdb.h>
 
-struct CLIENT_INFO {
-    int cfd;
-    std::string buffer;
-    sockaddr_in client_addr;
-};
-
-struct EPOLL_INFO {
-    int epollfd;
-    size_t epoll_buffers_size;
-    uint32_t epoll_timeout;
-    uint32_t epoll_event_types;
-};
+namespace server {
+    struct CLIENT_INFO {
+        int cfd;
+        std::string buffer;
+        sockaddr_in client_addr;
+    };
+    
+    struct EPOLL_INFO {
+        int epollfd;
+        size_t epoll_buffers_size;
+        uint32_t epoll_timeout;
+        uint32_t epoll_event_types;
+    };
+}
