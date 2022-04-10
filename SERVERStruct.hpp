@@ -1,6 +1,6 @@
 #pragma once
 #include <string>
-#include <initializer_list>
+#include <thread>
 
 #include <sys/socket.h>
 #include <sys/types.h>
@@ -21,6 +21,11 @@ namespace server {
         int cfd;
         sockaddr_in client_addr;
         CLIENT_BUFFER client_buffer;
+    };
+
+    struct THREAD_INFO {
+        std::thread thread_obj;
+        std::thread::id tid;
     };
 
     struct EPOLL_INFO {

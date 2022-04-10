@@ -21,7 +21,7 @@ namespace server {
         unordered_map<string, string> config;
         unordered_map<int, CLIENT_INFO> waiting_clients;
         unordered_map<int, EPOLL_INFO> epoll_info_table;
-        unique_ptr<thread[]> workers;
+        unordered_map<thread::id, THREAD_INFO> workers;
         boost::lockfree::queue<int, boost::lockfree::capacity<QUEUE_SIZE>> disconnected_clients;
         uint32_t num_of_connection;
         uint32_t max_num_of_connection;
@@ -87,6 +87,7 @@ namespace server {
         void master_thread() {
             server_ready = true;
     
+            thread::id thread_id = this_thread::get_id();
             int num_of_events = 0, ret, dcfd;
             EPOLL_INFO& epoll_info = epoll_info_table[epoll_master_fd];
             auto epoll_buffers = make_unique<epoll_event[]>(epoll_info.epoll_buffers_size);
@@ -104,7 +105,7 @@ namespace server {
     
                 // if no event is polled back
                 if ((num_of_events = wait_for_epoll_events(epoll_info, epoll_buffers.get())) == 0) {
-                    cerr << " [*] Nobody comes in. timeout = " << epoll_info.epoll_timeout << ", num_of_events = " << num_of_events << endl;
+                    cerr << " [" << thread_id << "] Master: Nobody comes in. timeout = " << epoll_info.epoll_timeout << endl;
                     while (disconnected_clients.pop(dcfd)) remove_disconnected_client(dcfd);
                     continue;
                 }
@@ -137,6 +138,8 @@ namespace server {
         void worker_thread() {
             while (!server_ready) sleep(1);
     
+            thread::id thread_id = this_thread::get_id();
+
             int num_of_events = 0, ret;
             EPOLL_INFO& epoll_info = epoll_info_table[epoll_worker_fd];
             auto epoll_buffers = make_unique<epoll_event[]>(epoll_info.epoll_buffers_size);
@@ -149,7 +152,7 @@ namespace server {
     
                 // if no event is polled back
                 if ((num_of_events = wait_for_epoll_events(epoll_info, epoll_buffers.get())) == 0) {
-                    cerr << " [*] Nobody comes in. timeout = " << epoll_info.epoll_timeout << ", num_of_events = " << num_of_events << endl;
+                    cerr << " [" << thread_id << "] Worker: Nobody comes in. timeout = " << epoll_info.epoll_timeout << endl;
                     continue;
                 }
     
@@ -207,6 +210,7 @@ namespace server {
         int check_for_client(int epollfd) {
             int cfd;
             sockaddr_in client_addr;
+            thread::id thread_id = this_thread::get_id();
     
             memset(&client_addr, 0, sizeof(client_addr));
             if (accept_new_client(sfd, cfd, reinterpret_cast<sockaddr*>(&client_addr)) != 0) {
@@ -220,17 +224,17 @@ namespace server {
     
             if (setup_client(cfd, client_addr) == -1) {
                 cerr << "Error occurred during setup_client()." << endl;
-                cerr << " [X] Connection closed due to max_num_of_connection = " << max_num_of_connection << ". ip: " << inet_ntoa(client_addr.sin_addr) << ", port: " << client_addr.sin_port << endl;
+                cerr << " [" << thread_id << "] Master: Connection closed due to max_num_of_connection = " << max_num_of_connection << ". ip: " << inet_ntoa(client_addr.sin_addr) << ", port: " << client_addr.sin_port << endl;
                 return -1;
             }
     
             if (add_epoll_interest(epoll_info_table[epollfd], cfd) == -1) {
                 cerr << "Error occurred during add_epoll_interest(). cfd = " << cfd << endl;
-                cerr << " [X] Connection closed. ip: " << inet_ntoa(client_addr.sin_addr) << ", port: " << client_addr.sin_port << endl;
+                cerr << " [" << thread_id << "] Master: Connection closed. ip: " << inet_ntoa(client_addr.sin_addr) << ", port: " << client_addr.sin_port << endl;
                 return -1;
             }
     
-            cerr << " [*] A new client is coming in. ip: " << inet_ntoa(client_addr.sin_addr) << ", port: " << client_addr.sin_port << endl;
+            cerr << " [" << thread_id << "] Master: A new client is coming in. ip: " << inet_ntoa(client_addr.sin_addr) << ", port: " << client_addr.sin_port << endl;
             return 0;
         }
     
@@ -238,27 +242,27 @@ namespace server {
             int ret = 0;
             int flags = MSG_DONTWAIT;
             CLIENT_INFO& client_info = waiting_clients[cfd];
+            thread::id thread_id = this_thread::get_id();
     
             if ((ret = req_handler(client_info, client_info.client_buffer, flags)) < 0) {
                 if (ret == -1) {
-                    cerr << " [X] Connection to client closed. ip: " << inet_ntoa(client_info.client_addr.sin_addr) << ", port: " << client_info.client_addr.sin_port << endl;
+                    cerr << " [" << thread_id << "] Worker: Connection to client closed. ip: " << inet_ntoa(client_info.client_addr.sin_addr) << ", port: " << client_info.client_addr.sin_port << endl;
                     return -1;
                 }
                 return ret;
             }
-            
-            show_req(client_info.client_buffer.req_struct);
-            client_info.client_buffer.resp_struct.data = "Data in file: " + client_info.client_buffer.req_struct.req_path + "\n";
 
+            //show_req(client_info.client_buffer.req_struct);
+            client_info.client_buffer.resp_struct.data = "Data in file: " + client_info.client_buffer.req_struct.req_path + "\n";
             if (resp_handler(client_info, client_info.client_buffer, flags) < 0) {
                 if (ret == -1) {
-                    cerr << " [X] Connection to client closed. ip: " << inet_ntoa(client_info.client_addr.sin_addr) << ", port: " << client_info.client_addr.sin_port << endl;
+                    cerr << " [" << thread_id << "] Worker: Connection to client closed. ip: " << inet_ntoa(client_info.client_addr.sin_addr) << ", port: " << client_info.client_addr.sin_port << endl;
                     return ret;
                 }
                 return ret;
             }
     
-            cerr << " [*] Connection to client closed. ip: " << inet_ntoa(client_info.client_addr.sin_addr) << ", port: " << client_info.client_addr.sin_port << endl;
+            cerr << " [" << thread_id << "] Worker: Connection to client closed. ip: " << inet_ntoa(client_info.client_addr.sin_addr) << ", port: " << client_info.client_addr.sin_port << endl;
             // close socket after the request/response finished
             return 0;
         }
@@ -355,7 +359,7 @@ namespace server {
     
                 epoll_info_table[epoll_process_fd] = {
                     .epollfd = epoll_process_fd,
-                    .epoll_buffers_size = 10,
+                    .epoll_buffers_size = 5,
                     .epoll_timeout = 20000,
                     .epoll_event_types = EPOLLIN | EPOLLWAKEUP | EPOLLEXCLUSIVE
                 };
@@ -364,9 +368,12 @@ namespace server {
                     cerr << "Cannot use lock-free queue, CAS not supported." << endl;
                 }
 
-                workers = make_unique<thread[]>(num_of_workers);
                 for (int i = 0; i < num_of_workers; ++i) {
-                    workers[i] = thread(&WebServer::worker_thread, this);
+                    THREAD_INFO temp = {
+                        .thread_obj = thread(&WebServer::worker_thread, this)
+                    };
+                    temp.tid = temp.thread_obj.get_id();
+                    workers[temp.tid] = move(temp);
                 }
     
                 // create epoll instance
@@ -390,7 +397,7 @@ namespace server {
     
                 epoll_info_table[epoll_worker_fd] = {
                     .epollfd = epoll_worker_fd,
-                    .epoll_buffers_size = 10,
+                    .epoll_buffers_size = 1,
                     .epoll_timeout = 20000,
                     .epoll_event_types = EPOLLIN | EPOLLWAKEUP | EPOLLEXCLUSIVE
                 };
@@ -417,8 +424,8 @@ namespace server {
         void stop() {
             if (server_terminated) return;
             server_terminated = true;
-            for (int i = 0; i < num_of_workers; i++) {
-                workers[i].join();
+            for (auto& [worker_id, worker]: workers) {
+                worker.thread_obj.join();
             }
     
             if (num_of_workers == 0) {
