@@ -6,19 +6,23 @@
 #include <functional>
 #include <thread>
 
+#include <boost/lockfree/queue.hpp>
+
 #include "Utils.hpp"
 
 using namespace std;
 
 namespace server {
+    // TODO: divide into TCPServer & WebServer 2 classes
     class WebServer {
-        unordered_map<string, string> config;
         bool server_inited, server_ready, server_terminated;
         int sfd;
         int epoll_process_fd, epoll_master_fd, epoll_worker_fd;
+        unordered_map<string, string> config;
         unordered_map<int, CLIENT_INFO> waiting_clients;
         unordered_map<int, EPOLL_INFO> epoll_info_table;
         unique_ptr<thread[]> workers;
+        boost::lockfree::queue<int, boost::lockfree::capacity<QUEUE_SIZE>> disconnected_clients;
         uint32_t num_of_connection;
         uint32_t max_num_of_connection;
         uint32_t num_of_workers;
@@ -78,12 +82,12 @@ namespace server {
          * this function may
          * modify epoll_buffers => but this is only for local thread => it's okay
          * modify waiting_clients => would add client into this map, but the key is fd, and it is auto-increment. is this okay?
-         * modify worker epoll's interest list => would add client into the struct. is this okay?
+         * modify worker epoll's interest list => would add client into the struct. => it's okay because of the internal mutex
          */
         void master_thread() {
             server_ready = true;
     
-            int num_of_events = 0, ret;
+            int num_of_events = 0, ret, dcfd;
             EPOLL_INFO& epoll_info = epoll_info_table[epoll_master_fd];
             auto epoll_buffers = make_unique<epoll_event[]>(epoll_info.epoll_buffers_size);
     
@@ -101,9 +105,13 @@ namespace server {
                 // if no event is polled back
                 if ((num_of_events = wait_for_epoll_events(epoll_info, epoll_buffers.get())) == 0) {
                     cerr << " [*] Nobody comes in. timeout = " << epoll_info.epoll_timeout << ", num_of_events = " << num_of_events << endl;
+                    while (disconnected_clients.pop(dcfd)) remove_disconnected_client(dcfd);
                     continue;
                 }
     
+                // TODO: can still be optimized
+                while (disconnected_clients.pop(dcfd)) remove_disconnected_client(dcfd);
+
                 // iterate each polled events
                 for (int index = 0; index < num_of_events; index++) {
                     int currfd = epoll_buffers.get()[index].data.fd;
@@ -111,9 +119,6 @@ namespace server {
                     // if new client comes in
                     if (currfd == sfd) {
                         // accept clients
-                        // TODO: waiting_clients RACE with worker_thread, add client into map => use additional thread-safe queue to pass the request to worker_thread.
-                        // TODO: worker epoll's interest list RACE with worker_thread, add into list => use additional thread-safe queue to pass the request to worker_thread.
-                        // so.. we need a thread-safe queue
                         if ((ret = check_for_client(epoll_worker_fd)) < 0) {
                             // do nothing
                         }
@@ -123,11 +128,11 @@ namespace server {
             }
         }
     
-        /* TODO: thread safety
+        /* thread safety
          * this function may:
          * modify epoll_buffers => but this is only for local thread => it's okay
          * modify waiting_clients => would remove client from this map, but the key is fd, and it is auto-increment. is this okay?
-         * modify worker epoll's interest list => would remove client from the struct. is this okay?
+         * modify worker epoll's interest list => would remove client from the struct. it's okay because of the internal mutex
          */
         void worker_thread() {
             while (!server_ready) sleep(1);
@@ -143,7 +148,6 @@ namespace server {
                 memset(epoll_buffers.get(), 0, sizeof(epoll_buffers.get()));
     
                 // if no event is polled back
-                // TODO: worker epoll's interest list, read from list
                 if ((num_of_events = wait_for_epoll_events(epoll_info, epoll_buffers.get())) == 0) {
                     cerr << " [*] Nobody comes in. timeout = " << epoll_info.epoll_timeout << ", num_of_events = " << num_of_events << endl;
                     continue;
@@ -159,13 +163,13 @@ namespace server {
                         if (ret == -2) continue;
                         // error occurred
                         // TODO: waiting_clients RACE with master_thread, remove from map => thread-safe queue would solve this
-                        // TODO: worker epoll's interest list RACE with master_thread and other worker thread, remove from list => thread-safe queue and internal lock would solve this
+                        disconnected_clients.push(currfd);
                         disconnect_client(epoll_worker_fd, currfd);
                     } else {
                         // a client is allowed to send/recv 1 http req/resp each connection
                         // and it's done
                         // TODO: waiting_clients RACE with master_thread, remove from map => thread-safe queue would solve this
-                        // TODO: worker epoll's interest list RACE with master_thread and other worker thread, remove from list => thread-safe queue and internal lock would solve this
+                        disconnected_clients.push(currfd);
                         disconnect_client(epoll_worker_fd, currfd);
                     }
                 }
@@ -189,11 +193,14 @@ namespace server {
         void disconnect_client(int epollfd, int cfd) {
             // remove from epoll interest list
             rm_epoll_interest(epoll_info_table[epollfd], cfd);
-            // remove client info struct
-            waiting_clients.erase(cfd);
             // close client socket
             close(cfd);
-    
+        }
+
+        void remove_disconnected_client(int cfd) {
+            // remove client info struct
+            waiting_clients.erase(cfd);
+
             num_of_connection -= 1;
         }
     
@@ -353,6 +360,10 @@ namespace server {
                     .epoll_event_types = EPOLLIN | EPOLLWAKEUP | EPOLLEXCLUSIVE
                 };
             } else {
+                if (!disconnected_clients.is_lock_free()) {
+                    cerr << "Cannot use lock-free queue, CAS not supported." << endl;
+                }
+
                 workers = make_unique<thread[]>(num_of_workers);
                 for (int i = 0; i < num_of_workers; ++i) {
                     workers[i] = thread(&WebServer::worker_thread, this);
@@ -412,21 +423,11 @@ namespace server {
     
             if (num_of_workers == 0) {
                 for (auto& [cfd, client_info]: waiting_clients) {
-                    // remove from epoll interest list
-                    rm_epoll_interest(epoll_info_table[epoll_process_fd], cfd);
-                    // close client socket
-                    close(cfd);
-    
-                    num_of_connection -= 1;
+                    disconnect_client(epoll_process_fd, cfd);
                 }
             } else {
                 for (auto& [cfd, client_info]: waiting_clients) {
-                    // remove from epoll interest list
-                    rm_epoll_interest(epoll_info_table[epoll_worker_fd], cfd);
-                    // close client socket
-                    close(cfd);
-    
-                    num_of_connection -= 1;
+                    disconnect_client(epoll_worker_fd, cfd);
                 }
             }
     

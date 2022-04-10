@@ -16,6 +16,7 @@ namespace server {
     #define PROCESS_MODE 3
     #define MASTER_MODE 1
     #define WORKER_MODE 2
+    #define QUEUE_SIZE 128
 }
 
 namespace client {

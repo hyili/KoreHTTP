@@ -1,13 +1,22 @@
 ### TODO
 - Thread support
     - waiting_clients may have RACE issue
-        - using thread-safe queue to solve master-worker (write/remove) RACE issue
-            - but still have DELETE/READ RACE issue between worker threads
-        - using individual waiting_clients to solve worker-worker (read/remove/write) RACE issue
-            - but may encounter issue of imbalanced connection distribution
-        - dynamically redistribute the connection to prevent the throuput issue
-    - epoll may have RACE issue
-        - master-worker (write/remove) RACE issue => no such issue
+        - use individual waiting_clients map
+            - using thread-safe queue to solve master-worker (write/remove) RACE issue
+                - but still have DELETE/READ RACE issue between worker threads
+            - using individual waiting_clients to solve worker-worker (read/remove/write) RACE issue
+                - but may encounter issue of imbalanced connection distribution
+            - dynamically redistribute the connection to prevent the throuput issue
+            - ***this is cache friendly, but need individual epoll interest list, and 2 queues(1 for master->worker inform, 1 for worker->master recycling)***
+        - with different perspective
+            - when new client coming in, master thread do waiting_clients map insert won't affect the reading operation of worker thread
+            - when handling coming message, only one worker thread will be activate by epoll events, because of EPOLLEXCLUSIVE flag, and it won't change the map itself
+            - when disconnecting client, after worker thread remove fd from epoll interest list, push the fd into the thread-safe queue, and wait for recycling by master thread
+            - when recycling, master thread fetch the fd, and erase the entry from waiting_clients
+            - ***this is not cache friendly, but need only one waiting_clients map, and 1 queue(for worker->master recycling)***
+            - ***USE THIS FOR NOW***
+    - epoll may have RACE issue => no such issue because of internal lock implementation
+        - master-worker (write/remove) RACE issue
             - epoll's implementation includes a mutex lock between EPOLL_CTL_ADD, EPOLL_CTL_DEL, EPOLL_CTL_MOD
             - https://code.woboq.org/linux/linux/fs/eventpoll.c.html
             - https://code.woboq.org/linux/linux/fs/eventpoll.c.html#2108 SYSCALL_DEFINE4
@@ -15,6 +24,8 @@
         - using individual epoll instances to solve lock issue
             - but may encounter issue of imbalanced connection distribution
         - dynamically redistribute the connection to prevent the throuput issue
+    - boost library lockfree queue implementation
+        - https://valelab4.ucsf.edu/svn/3rdpartypublic/boost-versions/boost_1_55_0/doc/html/lockfree/examples.html
     - moduo library implementation
         - https://cloud.tencent.com/developer/article/1879424
     - req_struct & resp_struct also has RACE issue => solve by an new struct CLIENT_BUFFER and aggregate into individual CLIENT_INFO
