@@ -253,7 +253,7 @@ namespace server {
             }
 
             //show_req(client_info.client_buffer.req_struct);
-            client_info.client_buffer.resp_struct.data = "Data in file: " + client_info.client_buffer.req_struct.req_path + "\n";
+            client_info.client_buffer.resp_struct.body = "Data in file: " + client_info.client_buffer.req_struct.uripath + "\n";
             if (resp_handler(client_info, client_info.client_buffer, flags) < 0) {
                 if (ret == -1) {
                     cerr << " [" << thread_id << "] Worker: Connection to client closed. ip: " << inet_ntoa(client_info.client_addr.sin_addr) << ", port: " << client_info.client_addr.sin_port << endl;
@@ -301,9 +301,9 @@ namespace server {
     
                     // split the request, and fill into req_struct
                     client_buffer.req_struct = {
-                        .version = sm[3],
-                        .req_path = sm[2],
-                        .method = sm[1]
+                        .method = sm[1],
+                        .uripath = sm[2],
+                        .version = sm[3]
                     };
     
                     // TODO: remove the trash in client_info.buffer
@@ -316,9 +316,9 @@ namespace server {
     
             resp_handler = [](const CLIENT_INFO& client_info, CLIENT_BUFFER& client_buffer, int flags) -> int {
                 int ret;
-                const string data = client_buffer.resp_struct.data;
+                const string body = client_buffer.resp_struct.body;
 
-                ret = send(client_info.cfd, data.c_str(), data.size(), flags);
+                ret = send(client_info.cfd, body.c_str(), body.size(), flags);
                 if (ret == -1) {
                     if (errno = EAGAIN || errno == EWOULDBLOCK) {
                         // TODO: check how NON-BLOCKING send works
@@ -399,7 +399,7 @@ namespace server {
                     .epollfd = epoll_worker_fd,
                     .epoll_buffers_size = 1,
                     .epoll_timeout = 20000,
-                    .epoll_event_types = EPOLLIN | EPOLLWAKEUP | EPOLLEXCLUSIVE
+                    .epoll_event_types = EPOLLIN | EPOLLET | EPOLLWAKEUP | EPOLLEXCLUSIVE
                 };
             }
     
@@ -424,15 +424,18 @@ namespace server {
         void stop() {
             if (server_terminated) return;
             server_terminated = true;
-            for (auto& [worker_id, worker]: workers) {
-                worker.thread_obj.join();
-            }
-    
+
+            if (!server_inited) return;
+
             if (num_of_workers == 0) {
                 for (auto& [cfd, client_info]: waiting_clients) {
                     disconnect_client(epoll_process_fd, cfd);
                 }
             } else {
+                for (auto& [worker_id, worker]: workers) {
+                    worker.thread_obj.join();
+                }
+
                 for (auto& [cfd, client_info]: waiting_clients) {
                     disconnect_client(epoll_worker_fd, cfd);
                 }

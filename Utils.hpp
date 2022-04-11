@@ -8,14 +8,14 @@ namespace generic {
     void show_req(SIMPLE_HTTP_REQ &req_struct) {
         std::cerr << "---------------------------------" << std::endl;
         std::cerr << "HTTP version: " << req_struct.version << std::endl;
-        std::cerr << "HTTP req_path: " << req_struct.req_path << std::endl;
+        std::cerr << "HTTP uripath: " << req_struct.uripath << std::endl;
         std::cerr << "HTTP method: " << req_struct.method << std::endl;
         std::cerr << "---------------------------------" << std::endl;
     }
     
     void show_resp(SIMPLE_HTTP_RESP &resp_struct) {
         std::cerr << "---------------------------------" << std::endl;
-        std::cerr << "HTTP data: " << resp_struct.data << std::endl;
+        std::cerr << "HTTP body: " << resp_struct.body << std::endl;
         std::cerr << "---------------------------------" << std::endl;
     }
 }

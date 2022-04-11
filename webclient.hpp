@@ -10,6 +10,7 @@ using namespace std;
 
 namespace client {
     class WebClient {
+        bool client_inited, client_ready, client_terminated;
         unordered_map<string, string> config;
         int sfd;
         generic::SIMPLE_HTTP_REQ req_struct;
@@ -19,8 +20,10 @@ namespace client {
     
     public:
         WebClient() = delete;
+        WebClient(WebClient&& wc) = default;
+        WebClient(const WebClient& wc) = default;
         ~WebClient() {disconnect();};
-        WebClient(int argc, char** argv) {
+        WebClient(int argc, char** argv): client_inited(false), client_ready(false), client_terminated(false) {
             if (parse_parameters(config, argc, argv) == -1) {
                 cerr << "Error occurred during parse_parameters()." << endl;
                 exit(-1);
@@ -31,7 +34,7 @@ namespace client {
                 string req;
         
                 // data struct serialization
-                req += req_struct.method + " " + req_struct.req_path + " " + req_struct.version + "\n";
+                req += req_struct.method + " " + req_struct.uripath + " " + req_struct.version + "\n";
         
                 ret = send(sfd, req.c_str(), req.size(), flags);
                 if (ret == -1) {
@@ -62,7 +65,7 @@ namespace client {
     
                     // fill into the resp struct
                     resp_struct = {
-                        .data = sm[0]
+                        .body = sm[0]
                     };
                     break;
                 }
@@ -72,6 +75,9 @@ namespace client {
         }
     
         int connect() {
+            if (client_terminated) return -1;
+            client_inited = true;
+
             // create socket fd
             if (create_socket(config, sfd) != 0) {
                 cerr << "Error occurred during create_socket()." << endl;
@@ -82,11 +88,14 @@ namespace client {
         }
     
         int process() {
+            if (!client_inited) return -1;
+            client_ready = true;
+
             // going to initiate req_struct
             req_struct = {
-                .version = "HTTP/1.1",
-                .req_path = "/path/to/webpage.html",
-                .method = "GET"
+                .method = "GET",
+                .uripath = "/path/to/webpage.html",
+                .version = "HTTP/1.1"
             };
         
             if (req_handler(sfd, req_struct) == -1) {
@@ -109,6 +118,14 @@ namespace client {
         }
     
         void disconnect() {
+            if (client_terminated) return;
+            client_terminated = true;
+
+            if (!client_inited) return;
+
+            client_inited = false;
+            client_ready = false;
+
             close(sfd);
         }
     };

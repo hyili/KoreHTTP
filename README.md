@@ -31,4 +31,9 @@
     - req_struct & resp_struct also has RACE issue => solve by an new struct CLIENT_BUFFER and aggregate into individual CLIENT_INFO
 - log by each thread
     - according to the run_test, seems like only 1 worker thread is triggered during each round 10 concurrent connections
-- timeout support
+- timeout disconnection support
+- eBPF support
+- Redis support
+- UDP support
+- WebSocket support
+- HTTP protocol parser
