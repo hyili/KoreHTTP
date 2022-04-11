@@ -76,7 +76,6 @@ namespace client {
     
         int connect() {
             if (client_terminated) return -1;
-            client_inited = true;
 
             // create socket fd
             if (create_socket(config, sfd) != 0) {
@@ -84,6 +83,7 @@ namespace client {
                 return -1;
             }
     
+            client_inited = true;
             return 0;
         }
     
@@ -110,18 +110,17 @@ namespace client {
                 return -1;
             }
         
-            // print the response out
-            show_resp(resp_struct);
+            //show_resp(resp_struct);
         
             cerr << " [*] Connection to server closed. ip: " << config["host"] << ", port: " << config["port"] << endl;
             return 0;
         }
     
-        void disconnect() {
+        void disconnect() noexcept {
             if (client_terminated) return;
-            client_terminated = true;
-
             if (!client_inited) return;
+
+            client_terminated = true;
 
             client_inited = false;
             client_ready = false;

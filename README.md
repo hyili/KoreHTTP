@@ -24,6 +24,9 @@
         - using individual epoll instances to solve lock issue
             - but may encounter issue of imbalanced connection distribution
         - dynamically redistribute the connection to prevent the throuput issue
+    - epoll_wait() & epoll_pwait() issue
+        - ***Edge-Trigger & Level-Trigger may wake up the worker multiple times in a specific period of time, which would cause error***
+        - ***Use EpollOneShot Instead!***
     - boost library lockfree queue implementation
         - https://valelab4.ucsf.edu/svn/3rdpartypublic/boost-versions/boost_1_55_0/doc/html/lockfree/examples.html
     - moduo library implementation
@@ -32,8 +35,15 @@
 - log by each thread
     - according to the run_test, seems like only 1 worker thread is triggered during each round 10 concurrent connections
 - timeout disconnection support
+- signal stop() with SIGINT
+    - Epoll Edge-Trigger would eat up all the events, stop() event won't accessible to all workers.
+    - Maybe wait for epoll_timeout?
+    - Use epoll_pwait() with sigmask to set the wake up signal.
 - eBPF support
 - Redis support
 - UDP support
 - WebSocket support
 - HTTP protocol parser
+
+
+### BUGS

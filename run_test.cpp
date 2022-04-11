@@ -19,7 +19,6 @@ int main(int argc, char** argv) {
             cout << "Connect No." << j << endl;
         }
 
-        //sleep(1);
         for (int j = 0; j < NUM_OF_CONNECT; ++j) {
             if (WCs[j].process() == -1) {
                 return -1;
@@ -27,7 +26,6 @@ int main(int argc, char** argv) {
             cout << "Process No." << j << endl;
         }
 
-        //sleep(1);
         for (int j = 0; j < NUM_OF_CONNECT; ++j) {
             WCs[i].disconnect();
             cout << "Disconnect No." << j << endl;

@@ -125,10 +125,10 @@ namespace server {
     // EPOLLWAKEUP: make device stay active
     // EPOLLET(Edge-Trigger): triggers when change state
     // Default(Level-Trigger): triggers when in specified state
-    // EPOLLEXCLUSIVE: in multithread scenario, prevent multiple epollfd to be trigger by the same event
-    int add_epoll_interest(const EPOLL_INFO& epoll_info, int fd) {
+    // EPOLLEXCLUSIVE: in multithread scenario, prevent multiple epollfd to be trigger by the same event => we have only 1 epollfd for multiple worker thread
+    int add_epoll_interest(const EPOLL_INFO& epoll_info, int fd, uint32_t repl_event_types) {
         epoll_event epevent {
-            .events = epoll_info.epoll_event_types,
+            .events = repl_event_types ? repl_event_types : epoll_info.epoll_event_types,
             .data = epoll_data_t {
                 .fd = fd
             }
@@ -142,6 +142,22 @@ namespace server {
         return 0;
     }
     
+    int mod_epoll_interest(const EPOLL_INFO& epoll_info, int fd, bool enable) {
+        epoll_event epevent {
+            .events = epoll_info.epoll_event_types | (enable ? EPOLLOUT : 0),
+            .data = epoll_data_t {
+                .fd = fd
+            }
+        };
+
+        if (epoll_ctl(epoll_info.epollfd, EPOLL_CTL_MOD, fd, &epevent) == -1) {
+            std::cerr << "Error occurred during epoll_ctl(). errno = " << errno << std::endl;
+            return -1;
+        }
+
+        return 0;
+    }
+
     int rm_epoll_interest(const EPOLL_INFO& epoll_info, int fd) {
         if (epoll_ctl(epoll_info.epollfd, EPOLL_CTL_DEL, fd, nullptr) == -1) {
             std::cerr << "Error occurred during epoll_ctl(). errno = " << errno << std::endl;
