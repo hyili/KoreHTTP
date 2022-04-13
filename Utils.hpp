@@ -104,7 +104,7 @@ namespace server {
     int accept_new_client(int sfd, int& cfd, sockaddr* client_addr) {
         socklen_t client_addr_size = sizeof(client_addr);
         cfd = accept(sfd, client_addr, &client_addr_size);
-        if (cfd == -1) return -1;
+        if (cfd < 0) return -1;
         return 0;
     }
     

@@ -5,8 +5,8 @@
 
 using namespace std;
 
-#define NUM_OF_CONNECT 10
-#define NUM_OF_ROUND 100
+#define NUM_OF_CONNECT 25
+#define NUM_OF_ROUND 100000
 
 int main(int argc, char** argv) {
     for (int i = 0; i < NUM_OF_ROUND; i++) {

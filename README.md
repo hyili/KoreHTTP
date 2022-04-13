@@ -9,13 +9,12 @@
             - dynamically redistribute the connection to prevent the throuput issue
             - ***this is cache friendly, but need individual epoll interest list, and 2 queues(1 for master->worker inform, 1 for worker->master recycling)***
             - Suitable for consistent HTTP connection
-        - with different perspective
+        - with different perspective (DEPRECATED!)
             - when new client coming in, master thread do waiting_clients map insert won't affect the reading operation of worker thread
             - when handling coming message, only one worker thread will be activate by epoll events, because of EPOLLEXCLUSIVE flag, and it won't change the map itself
             - when disconnecting client, after worker thread remove fd from epoll interest list, push the fd into the thread-safe queue, and wait for recycling by master thread
             - when recycling, master thread fetch the fd, and erase the entry from waiting_clients
             - ***this is not cache friendly, but need only one waiting_clients map, and 1 queue(for worker->master recycling)***
-            - ***USE THIS FOR NOW***
             - ***Edge-Trigger & Level-Trigger both may wake up the worker multiple times in a specific period of time, which would cause error on waiting_clients RACE condition***
             - ***Use EpollOneShot Instead!***
             - Suitable for non-consistent HTTP connection
@@ -55,12 +54,12 @@
 
 
 ### BUGS
-- recycling queue delay issue + EPOLLET duplicate event => COMBO! => replace EPOLLET with EPOLLONESHOT can resolve this => but this needs more syscall
+- recycling queue delay issue + EPOLLET duplicate event => COMBO! => replace EPOLLET with EPOLLONESHOT can resolve this => but this needs more syscall => Resolved
     - delay may comes from the latency of sequentially event processing
     - if fd=10 EPOLLET generates 2 EPOLLRDHUP events, 1 is handled by worker and removed by master, then another 1 is handled by worker(epoll_ctl errno = 2), then a new client comes in which is assigned fd=10. but at this time, the remove request of fd=10 comes, master removed the wrong client which has fd=10...
     - may encounter errno = 2 (no such file (client is closed, server not closed)) and errno = 9 (bad file descriptor (client & server are both closed))
         - because fd with EPOLLET may be trigger more than once, during the process of handling previous event
-- cut down the data that is not sent completely, and wait for the next send
-- nc not work
-- HTTP/1.0 should actively close connection => too slow for master to close()
-- message out-of-order issue, if the event is handled by different thread
+- nc not work => Resolved
+- HTTP/1.0 should actively close connection => too slow for master to close() => Resolved
+- message out-of-order issue, if the event is handled by different thread => Resolved
+- server end still have some issue
