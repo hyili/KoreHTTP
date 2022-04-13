@@ -62,4 +62,4 @@
 - nc not work => Resolved
 - HTTP/1.0 should actively close connection => too slow for master to close() => Resolved
 - message out-of-order issue, if the event is handled by different thread => Resolved
-- server end still have some issue
+- server end still have some issue => Resolved

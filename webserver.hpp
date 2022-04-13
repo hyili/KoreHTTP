@@ -62,7 +62,7 @@ namespace server {
                     // time to stop
                     if (currfd == pipefd[0]) {
                         cerr << " [*][" << counter << "] Process: Stop " << currfd << endl;
-                        break;
+                        continue;
                     }
 
                     // if new client comes in
@@ -151,7 +151,7 @@ namespace server {
                     // time to stop
                     if (currfd == pipefd[0]) {
                         cerr << " [*][" << counter << "] Master: Stop " << currfd << endl;
-                        break;
+                        continue;
                     }
 
                     // if new client comes in
@@ -565,7 +565,7 @@ namespace server {
                 for (auto& [thread_id, thread_info]: workers) {
                     thread_info.thread_obj.join();
                     for (auto& [cfd, client_info]: thread_info.waiting_clients) {
-                        disconnect_client(cfd, thread_info);
+                        if (cfd != pipefd[0]) disconnect_client(cfd, thread_info);
                     }
                 }
             }
