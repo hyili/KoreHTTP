@@ -21,6 +21,7 @@ namespace server {
         int cfd;
         sockaddr_in client_addr;
         CLIENT_BUFFER client_buffer;
+        uint32_t pending_remove;
     };
 
     struct THREAD_INFO {

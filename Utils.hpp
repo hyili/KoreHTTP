@@ -135,7 +135,7 @@ namespace server {
         };
     
         if (epoll_ctl(epoll_info.epollfd, EPOLL_CTL_ADD, fd, &epevent) == -1) {
-            std::cerr << "Error occurred during epoll_ctl(). errno = " << errno << std::endl;
+            std::cerr << " [add_epoll_interest] Error occurred during epoll_ctl(). errno = " << errno << ", fd = " << fd << std::endl;
             return -1;
         }
     
@@ -151,7 +151,7 @@ namespace server {
         };
 
         if (epoll_ctl(epoll_info.epollfd, EPOLL_CTL_MOD, fd, &epevent) == -1) {
-            std::cerr << "Error occurred during epoll_ctl(). errno = " << errno << std::endl;
+            std::cerr << " [mod_epoll_interest] Error occurred during epoll_ctl(). errno = " << errno << ", fd = " << fd << std::endl;
             return -1;
         }
 
@@ -160,7 +160,7 @@ namespace server {
 
     int rm_epoll_interest(const EPOLL_INFO& epoll_info, int fd) {
         if (epoll_ctl(epoll_info.epollfd, EPOLL_CTL_DEL, fd, nullptr) == -1) {
-            std::cerr << "Error occurred during epoll_ctl(). errno = " << errno << std::endl;
+            std::cerr << " [rm_epoll_interest] Error occurred during epoll_ctl(). errno = " << errno << ", fd = " << fd << std::endl;
             return -1;
         }
     
@@ -172,7 +172,7 @@ namespace server {
         int num_of_events;
     
         if ((num_of_events = epoll_wait(epoll_info.epollfd, epoll_buffers, epoll_info.epoll_buffers_size, epoll_info.epoll_timeout)) == -1) {
-            std::cerr << "Error occurred during epoll_wait(). errno = " << errno << std::endl;
+            std::cerr << " [wait_for_epoll_events] Error occurred during epoll_wait(). errno = " << errno << std::endl;
             return -1;
         }
     
@@ -237,7 +237,7 @@ namespace client {
     
             close(sfd);
         }
-    
+
         // release search results
         freeaddrinfo(results);
     
@@ -246,6 +246,8 @@ namespace client {
             std::cerr << "Could not connect." << std::endl;
             return -1;
         }
+
+        //std::cerr << " Connection established using ip: " << inet_ntoa(((sockaddr_in*)rptr->ai_addr)->sin_addr) << ", port: " << ((sockaddr_in*)rptr->ai_addr)->sin_port << std::endl;
     
         return 0;
     }

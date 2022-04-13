@@ -12,13 +12,13 @@
 #include <arpa/inet.h>
 
 namespace server {
-    #define BUFFER_SIZE 1024
+    #define BUFFER_SIZE 10
     #define PROCESS_MODE 3
     #define MASTER_MODE 1
     #define WORKER_MODE 2
-    #define QUEUE_SIZE 128
+    #define QUEUE_SIZE 1024
 }
 
 namespace client {
-    #define BUFFER_SIZE 1024
+    #define BUFFER_SIZE 10
 }

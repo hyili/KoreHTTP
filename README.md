@@ -8,6 +8,7 @@
                 - but may encounter issue of imbalanced connection distribution
             - dynamically redistribute the connection to prevent the throuput issue
             - ***this is cache friendly, but need individual epoll interest list, and 2 queues(1 for master->worker inform, 1 for worker->master recycling)***
+            - Suitable for consistent HTTP connection
         - with different perspective
             - when new client coming in, master thread do waiting_clients map insert won't affect the reading operation of worker thread
             - when handling coming message, only one worker thread will be activate by epoll events, because of EPOLLEXCLUSIVE flag, and it won't change the map itself
@@ -15,6 +16,9 @@
             - when recycling, master thread fetch the fd, and erase the entry from waiting_clients
             - ***this is not cache friendly, but need only one waiting_clients map, and 1 queue(for worker->master recycling)***
             - ***USE THIS FOR NOW***
+            - ***Edge-Trigger & Level-Trigger both may wake up the worker multiple times in a specific period of time, which would cause error on waiting_clients RACE condition***
+            - ***Use EpollOneShot Instead!***
+            - Suitable for non-consistent HTTP connection
     - epoll may have RACE issue => no such issue because of internal lock implementation
         - master-worker (write/remove) RACE issue
             - epoll's implementation includes a mutex lock between EPOLL_CTL_ADD, EPOLL_CTL_DEL, EPOLL_CTL_MOD
@@ -24,21 +28,25 @@
         - using individual epoll instances to solve lock issue
             - but may encounter issue of imbalanced connection distribution
         - dynamically redistribute the connection to prevent the throuput issue
-    - epoll_wait() & epoll_pwait() issue
-        - ***Edge-Trigger & Level-Trigger may wake up the worker multiple times in a specific period of time, which would cause error***
-        - ***Use EpollOneShot Instead!***
     - boost library lockfree queue implementation
         - https://valelab4.ucsf.edu/svn/3rdpartypublic/boost-versions/boost_1_55_0/doc/html/lockfree/examples.html
     - moduo library implementation
         - https://cloud.tencent.com/developer/article/1879424
+    - epoll
+        - https://treenet.cc/tech/11264.html
+        - https://events19.linuxfoundation.org/wp-content/uploads/2018/07/dbueso-oss-japan19.pdf
+    - epoll discussion
+        - https://groups.google.com/g/linux.kernel/c/yVkl-7IRKwM
     - req_struct & resp_struct also has RACE issue => solve by an new struct CLIENT_BUFFER and aggregate into individual CLIENT_INFO
 - log by each thread
     - according to the run_test, seems like only 1 worker thread is triggered during each round 10 concurrent connections
 - timeout disconnection support
+- persistent connection support
 - signal stop() with SIGINT
     - Epoll Edge-Trigger would eat up all the events, stop() event won't accessible to all workers.
     - Maybe wait for epoll_timeout?
     - Use epoll_pwait() with sigmask to set the wake up signal.
+    - epoll_wait() & epoll_pwait() issue
 - eBPF support
 - Redis support
 - UDP support
@@ -47,3 +55,12 @@
 
 
 ### BUGS
+- recycling queue delay issue + EPOLLET duplicate event => COMBO! => replace EPOLLET with EPOLLONESHOT can resolve this => but this needs more syscall
+    - delay may comes from the latency of sequentially event processing
+    - if fd=10 EPOLLET generates 2 EPOLLRDHUP events, 1 is handled by worker and removed by master, then another 1 is handled by worker(epoll_ctl errno = 2), then a new client comes in which is assigned fd=10. but at this time, the remove request of fd=10 comes, master removed the wrong client which has fd=10...
+    - may encounter errno = 2 (no such file (client is closed, server not closed)) and errno = 9 (bad file descriptor (client & server are both closed))
+        - because fd with EPOLLET may be trigger more than once, during the process of handling previous event
+- cut down the data that is not sent completely, and wait for the next send
+- nc not work
+- HTTP/1.0 should actively close connection => too slow for master to close()
+- message out-of-order issue, if the event is handled by different thread

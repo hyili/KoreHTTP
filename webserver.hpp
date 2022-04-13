@@ -15,6 +15,7 @@ using namespace std;
 namespace server {
     // TODO: divide into TCPServer & WebServer 2 classes
     class WebServer {
+        string HTTPVersion;
         bool server_inited, server_ready, server_terminated;
         int sfd, pipefd[2];
         int epoll_process_fd, epoll_master_fd, epoll_worker_fd;
@@ -38,6 +39,7 @@ namespace server {
             // prepare to accept
             if (add_epoll_interest(epoll_info, sfd, 0) == -1) {
                 cerr << "Error occurred during add_epoll_interest()." << endl;
+                return;
             }
     
             // processing
@@ -48,7 +50,7 @@ namespace server {
     
                 // if no event is polled back
                 if ((num_of_events = wait_for_epoll_events(epoll_info, epoll_buffers.get())) == 0) {
-                    cerr << " [*] Nobody comes in. timeout = " << epoll_info.epoll_timeout << ", num_of_events = " << num_of_events << endl;
+                    cerr << " [*] Process: Nobody comes in. timeout = " << epoll_info.epoll_timeout << endl;
                     continue;
                 }
     
@@ -56,6 +58,7 @@ namespace server {
                 for (int index = 0; index < num_of_events; index++) {
                     counter += 1;
                     int currfd = epoll_buffers.get()[index].data.fd;
+                    uint32_t events = epoll_buffers.get()[index].events;
     
                     // time to stop
                     if (currfd == pipefd[0]) {
@@ -71,18 +74,35 @@ namespace server {
                         }
                         continue;
                     }
-    
-                    if ((ret = check_for_client_request(currfd)) < 0) {
-                        // data transmission is not complete
-                        if (ret == -2) continue;
-                        // error occurred
+
+                    // handle client actively disconnect
+                    if (events & EPOLLRDHUP) {
+                        disconnect_client(epoll_process_fd, currfd);
+                        remove_disconnected_client(currfd);
+                        continue;
+                    }
+
+                    // handle client send() and recv()
+                    if ((ret = check_for_client_request(currfd, events)) < 0) {
+                        // handle request struct not complete
+                        if (ret == -2) {
+                            // explicitly re-register for EPOLLONESHOT
+                            if (epoll_info.epoll_event_types & EPOLLONESHOT) mod_epoll_interest(epoll_info, currfd, true);
+                            continue;
+                        }
+
+                        // other error occurred
                         disconnect_client(epoll_process_fd, currfd);
                         remove_disconnected_client(currfd);
                     } else {
-                        // a client is allowed to send/recv 1 http req/resp each connection
-                        // and it's done
-                        disconnect_client(epoll_process_fd, currfd);
-                        remove_disconnected_client(currfd);
+                        if (HTTPVersion == "1.0") {
+                            disconnect_client(epoll_process_fd, currfd);
+                            remove_disconnected_client(currfd);
+                            continue;
+                        }
+
+                        // explicitly re-register for EPOLLONESHOT
+                        if (epoll_info.epoll_event_types & EPOLLONESHOT) mod_epoll_interest(epoll_info, currfd, true);
                     }
                 }
             }
@@ -106,6 +126,7 @@ namespace server {
             // prepare to accept
             if (add_epoll_interest(epoll_info, sfd, 0) == -1) {
                 cerr << "Error occurred during add_epoll_interest()." << endl;
+                return;
             }
     
             // processing
@@ -157,7 +178,6 @@ namespace server {
             while (!server_ready) sleep(1);
     
             thread::id thread_id = this_thread::get_id();
-
             int num_of_events = 0, ret;
             uint32_t counter = 0;
             EPOLL_INFO& epoll_info = epoll_info_table[epoll_worker_fd];
@@ -179,30 +199,41 @@ namespace server {
                 for (int index = 0; index < num_of_events; index++) {
                     counter += 1;
                     int currfd = epoll_buffers.get()[index].data.fd;
+                    uint32_t events = epoll_buffers.get()[index].events;
     
-                    // TODO: waiting_clients, read client from map
-                    if ((ret = check_for_client_request(currfd)) < 0) {
-                        // data transmission is not complete
+                    // handle client actively disconnect
+                    if (events & EPOLLRDHUP) {
+                        disconnect_client(epoll_worker_fd, currfd);
+                        disconnected_clients.push(currfd);
+                        continue;
+                    }
+
+                    // handle client send() and recv()
+                    if ((ret = check_for_client_request(currfd, events)) < 0) {
+                        // handle request struct not complete
                         if (ret == -2) {
                             // TODO: time to stop, use sigmask with epoll_pwait() would be better?
                             if (currfd == pipefd[0]) {
                                 cerr << " [" << thread_id << "][" << counter << "] Worker: Stop " << currfd << endl;
                             }
 
-                            // explicitly re-register
-                            mod_epoll_interest(epoll_info, currfd, true);
+                            // explicitly re-register for EPOLLONESHOT
+                            if (epoll_info.epoll_event_types & EPOLLONESHOT) mod_epoll_interest(epoll_info, currfd, true);
                             continue;
                         }
-                        // error occurred
-                        // TODO: waiting_clients RACE with master_thread, remove from map => thread-safe queue would solve this
+
+                        // other error occurred
                         disconnect_client(epoll_worker_fd, currfd);
                         disconnected_clients.push(currfd);
                     } else {
-                        // a client is allowed to send/recv 1 http req/resp each connection
-                        // and it's done
-                        // TODO: waiting_clients RACE with master_thread, remove from map => thread-safe queue would solve this
-                        disconnect_client(epoll_worker_fd, currfd);
-                        disconnected_clients.push(currfd);
+                        if (HTTPVersion == "1.0") {
+                            disconnect_client(epoll_worker_fd, currfd);
+                            disconnected_clients.push(currfd);
+                            continue;
+                        }
+
+                        // explicitly re-register for EPOLLONESHOT
+                        if (epoll_info.epoll_event_types & EPOLLONESHOT) mod_epoll_interest(epoll_info, currfd, true);
                     }
                 }
             }
@@ -212,12 +243,22 @@ namespace server {
             if (num_of_connection >= max_num_of_connection) {
                 return -1;
             }
-    
-            num_of_connection += 1;
-            waiting_clients[cfd] = {
-                .cfd = cfd,
-                .client_addr = client_addr
-            };
+
+            // if cfd havent been remove yet,
+            if (waiting_clients.find(cfd) != waiting_clients.end()) {
+                waiting_clients[cfd] = {
+                    .cfd = cfd,
+                    .client_addr = client_addr,
+                    .pending_remove = waiting_clients[cfd].pending_remove+1
+                };
+            } else {
+                num_of_connection += 1;
+                waiting_clients[cfd] = {
+                    .cfd = cfd,
+                    .client_addr = client_addr,
+                    .pending_remove = 0
+                };
+            }
     
             return 0;
         }
@@ -229,12 +270,18 @@ namespace server {
 
         void remove_disconnected_client(int cfd) {
             // remove client info struct
-            // TODO: temporary added
-//            if (waiting_clients.find(cfd) != waiting_clients.end()) {
-                waiting_clients.erase(cfd);
-                num_of_connection -= 1;
-                close(cfd);
-//            }
+            if (waiting_clients.find(cfd) != waiting_clients.end()) {
+                cerr << " [*] Master: Remove " << cfd << endl;
+                if (waiting_clients[cfd].pending_remove == 0) {
+                    waiting_clients.erase(cfd);
+                    num_of_connection -= 1;
+                    close(cfd);
+                } else {
+                    //cerr << "num_of_connection vs waiting_clients.size(): " << num_of_connection << ":" << waiting_clients.size() << endl;
+                    cerr << "Possible?" << endl;
+                    waiting_clients[cfd].pending_remove -= 1;
+                }
+            }
         }
 
         int check_for_client(int epollfd) {
@@ -266,35 +313,45 @@ namespace server {
                 return -1;
             }
     
-            cerr << " [" << thread_id << "] Master: A new client is coming in. ip: " << inet_ntoa(client_addr.sin_addr) << ", port: " << client_addr.sin_port << endl;
+            cerr << " [*] Master: new client from " << cfd << endl;
             return 0;
         }
     
-        int check_for_client_request(int cfd) {
+        int check_for_client_request(int cfd, uint32_t events) {
             int ret = 0;
             int flags = MSG_DONTWAIT | MSG_NOSIGNAL;
             CLIENT_INFO& client_info = waiting_clients[cfd];
             thread::id thread_id = this_thread::get_id();
     
-            if ((ret = req_handler(client_info, client_info.client_buffer, flags)) < 0) {
-                if (ret == -1) {
-                    cerr << " [" << thread_id << "] Worker: Connection to client closed. ip: " << inet_ntoa(client_info.client_addr.sin_addr) << ", port: " << client_info.client_addr.sin_port << endl;
-                    return -1;
+            // if we have something to recv
+            if (events & EPOLLIN) {
+                cerr << " [" << thread_id << "] Worker: read something from " << cfd << endl;
+                if ((ret = req_handler(client_info, client_info.client_buffer, flags)) < 0) {
+                    if (ret == -1) {
+                        cerr << " [" << thread_id << "] Worker: Connection to client closed. ip: " << inet_ntoa(client_info.client_addr.sin_addr) << ", port: " << client_info.client_addr.sin_port << endl;
+                        return -1;
+                    }
+                    // do nothing if EAGAIN
+                    if (ret == -2) {}
                 }
+                cerr << " [" << thread_id << "] Worker: read success" << endl;
             }
 
-            //show_req(client_info.client_buffer.req_struct);
-
-            client_info.client_buffer.resp_struct.body = "Data in file: " + client_info.client_buffer.req_struct.uripath + "\n";
-            if ((ret = resp_handler(client_info, client_info.client_buffer, flags)) < 0) {
-                if (ret == -1) {
-                    cerr << " [" << thread_id << "] Worker: Connection to client closed. ip: " << inet_ntoa(client_info.client_addr.sin_addr) << ", port: " << client_info.client_addr.sin_port << endl;
-                    return ret;
+            // if we have something to send
+            if (client_info.client_buffer.req_struct.version.size() > 0) {
+                cerr << " [" << thread_id << "] Worker: write something to " << cfd << endl;
+                client_info.client_buffer.resp_struct.body = client_info.client_buffer.req_struct.version + " 200 Ok\r\n\r\n";
+                if ((ret = resp_handler(client_info, client_info.client_buffer, flags)) < 0) {
+                    if (ret == -1) {
+                        cerr << " [" << thread_id << "] Worker: Connection to client closed. ip: " << inet_ntoa(client_info.client_addr.sin_addr) << ", port: " << client_info.client_addr.sin_port << endl;
+                        return ret;
+                    }
+                    // do nothing if EAGAIN
+                    if (ret == -2) {}
                 }
+                cerr << " [" << thread_id << "] Worker: write success" << endl;
             }
     
-            cerr << " [" << thread_id << "] Worker: Connection to client closed. ip: " << inet_ntoa(client_info.client_addr.sin_addr) << ", port: " << client_info.client_addr.sin_port << endl;
-            // close socket after the request/response finished
             return ret;
         }
     public:
@@ -311,11 +368,12 @@ namespace server {
             req_handler = [](const CLIENT_INFO& client_info, CLIENT_BUFFER& client_buffer, int flags) -> int {
                 char buffer[BUFFER_SIZE] = {};
                 int ret;
-                regex rule("(GET|POST|PUT|DELETE) (/[^ ]*) (HTTP/[0-9\\.]+)\n");
+                regex rule("(GET|POST|PUT|DELETE) (/[^ ]*) (HTTP/[0-9\\.]+)\r?\n([^\\s]+:( )*[^\\s]+\r?\n)*\r?\n");
+                //regex rule("(GET|POST|PUT|DELETE) (/[^ ]*) (HTTP/[0-9\\.]+)\n");
                 smatch sm;
     
                 while (ret = recv(client_info.cfd, buffer, BUFFER_SIZE, flags)) {
-                    if (ret == -1) {
+                    if (ret < 0) {
                         if (errno = EAGAIN || errno == EWOULDBLOCK) {
                             cerr << "No more data to read." << endl;
                             return -2;
@@ -337,28 +395,31 @@ namespace server {
                         .version = sm[3]
                     };
     
-                    // TODO: remove the trash in client_info.buffer
+                    // TODO: reset the request buffer
+                    client_buffer.buffer.clear();
     
-                    break;
+                    return 0;
                 }
     
-                return 0;
+                return -1;
             };
     
             resp_handler = [](const CLIENT_INFO& client_info, CLIENT_BUFFER& client_buffer, int flags) -> int {
                 int ret;
-                const string body = client_buffer.resp_struct.body;
+                const string body = client_info.client_buffer.resp_struct.body;
 
                 ret = send(client_info.cfd, body.c_str(), body.size(), flags);
-                if (ret == -1) {
+                if (ret < 0) {
                     if (errno = EAGAIN || errno == EWOULDBLOCK) {
-                        // TODO: check how NON-BLOCKING send works
                         cerr << "No data sent." << endl;
                         return -2;
                     }
                     cerr << "Error occurred during send(). errno = " << errno << endl;
                     return -1;
                 }
+
+                // TODO: reset the request struct
+                client_buffer.req_struct.version = "";
      
                 return 0;
             };
@@ -379,9 +440,11 @@ namespace server {
                 return -1;
             }
 
+            HTTPVersion = "1.0";
+
             // limitation
             num_of_connection = 0;
-            max_num_of_connection = 10;
+            max_num_of_connection = 250;
     
             // thread workers, 0: for single thread server
             num_of_workers = 4;
@@ -393,15 +456,16 @@ namespace server {
                     return -1;
                 }
     
+                // TODO: EPOLLET & EPOLLONESHOT
                 epoll_info_table[epoll_process_fd] = {
                     .epollfd = epoll_process_fd,
                     .epoll_buffers_size = 5,
                     .epoll_timeout = 20000,
-                    .epoll_event_types = EPOLLIN | EPOLLWAKEUP
+                    .epoll_event_types = EPOLLIN | EPOLLRDHUP | EPOLLWAKEUP
                 };
 
                 // add a event fd for signaling the stop event
-                add_epoll_interest(epoll_info_table[epoll_master_fd], pipefd[0], 0);
+                add_epoll_interest(epoll_info_table[epoll_process_fd], pipefd[0], 0);
             } else {
                 if (!disconnected_clients.is_lock_free()) {
                     cerr << "Cannot use lock-free queue, CAS not supported." << endl;
@@ -429,16 +493,16 @@ namespace server {
     
                 epoll_info_table[epoll_master_fd] = {
                     .epollfd = epoll_master_fd,
-                    .epoll_buffers_size = 1,
+                    .epoll_buffers_size = 5,
                     .epoll_timeout = 20000,
                     .epoll_event_types = EPOLLIN | EPOLLWAKEUP
                 };
     
                 epoll_info_table[epoll_worker_fd] = {
                     .epollfd = epoll_worker_fd,
-                    .epoll_buffers_size = 1,
+                    .epoll_buffers_size = 5,
                     .epoll_timeout = 20000,
-                    .epoll_event_types = EPOLLIN | EPOLLONESHOT | EPOLLWAKEUP
+                    .epoll_event_types = EPOLLIN | EPOLLRDHUP | EPOLLONESHOT | EPOLLWAKEUP
                 };
 
                 // add a event fd for signaling the stop event
@@ -457,8 +521,6 @@ namespace server {
             if (num_of_workers == 0) {
                 process();
             } else {
-                // TODO: implement signal handler for join
-                // TODO: implement signal terminator for each thread => runtime adjust number of thread
                 master_thread();
             }
     

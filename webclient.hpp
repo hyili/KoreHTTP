@@ -34,7 +34,7 @@ namespace client {
                 string req;
         
                 // data struct serialization
-                req += req_struct.method + " " + req_struct.uripath + " " + req_struct.version + "\n";
+                req += req_struct.method + " " + req_struct.uripath + " " + req_struct.version + "\r\n\r\n";
         
                 ret = send(sfd, req.c_str(), req.size(), flags);
                 if (ret == -1) {
@@ -59,7 +59,7 @@ namespace client {
                     memset(buffer, 0, BUFFER_SIZE);
     
                     // parse the response
-                    regex rule("Data in file: (/[^ ]*)\n");
+                    regex rule("(HTTP/[0-9\\.]+) ([0-9]{3}) ([^\\s]+)\r?\n\r?\n");
                     smatch sm;
                     if (!regex_search(resp, sm, rule)) continue;
     
@@ -67,10 +67,11 @@ namespace client {
                     resp_struct = {
                         .body = sm[0]
                     };
-                    break;
+
+                    return 0;
                 }
     
-                return 0;
+                return -1;
             };
         }
     

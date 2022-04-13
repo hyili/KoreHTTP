@@ -14,6 +14,7 @@ int main(int argc, char** argv) {
         cout << "Round No." << i << endl;
         for (int j = 0; j < NUM_OF_CONNECT; ++j) {
             if (WCs[j].connect() == -1) {
+                cout << "Failed at: Connect No." << j << endl;
                 return -1;
             }
             cout << "Connect No." << j << endl;
@@ -21,13 +22,14 @@ int main(int argc, char** argv) {
 
         for (int j = 0; j < NUM_OF_CONNECT; ++j) {
             if (WCs[j].process() == -1) {
+                cout << "Failed at: Process No." << j << endl;
                 return -1;
             }
             cout << "Process No." << j << endl;
         }
 
         for (int j = 0; j < NUM_OF_CONNECT; ++j) {
-            WCs[i].disconnect();
+//            WCs[i].disconnect();
             cout << "Disconnect No." << j << endl;
         }
         cout << endl;
