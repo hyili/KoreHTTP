@@ -32,32 +32,113 @@ namespace server {
         function<int(const CLIENT_INFO&, CLIENT_BUFFER&, int)> resp_handler;
     
         void process() {
-            int num_of_events = 0, ret = 0;
+            int num_of_events = 0;
             uint32_t counter = 0;
 
-            queue<epoll_event*> client_disconnect_reqq, client_connect_reqq, client_recv_rdyq, client_send_rdyq, garbage_q;
-            unordered_map<int, queue<epoll_event*>*> q;
+            unordered_map<int, function<void(epoll_event&)>> handler;
             auto events_filter = EPOLLRDHUP | EPOLLIN | EPOLLOUT;
-            q[EPOLLRDHUP] = q[EPOLLRDHUP | EPOLLIN] = q[EPOLLRDHUP | EPOLLOUT] = q[EPOLLRDHUP | EPOLLIN | EPOLLOUT] = &client_disconnect_reqq;
-            q[EPOLLIN] = q[EPOLLIN | EPOLLOUT] = &client_recv_rdyq;
-            q[EPOLLOUT] = &client_send_rdyq;
-            q[0] = &garbage_q;
-
             auto& epoll_info = process_epoll_info;
             auto epoll_process_fd = epoll_info.epollfd;
             auto epoll_buffers = make_unique<epoll_event[]>(epoll_info.epoll_buffers_size);
             bool EPOLLONESHOT_enabled = epoll_info.epoll_event_types & EPOLLONESHOT;
+
+            auto client_disconnect_handler = [&](epoll_event& currevt) -> void {
+                // client disconnect request => Okay for EPOLLET, because we close the fd, no more request will come
+                auto currfd = currevt.data.fd;
+                auto events = currevt.events;
+
+                rm_epoll_interest(process_epoll_info, currfd);
+                global_waiting_clients.erase(currfd);
+                close(currfd);
+            };
+
+            auto client_connect_handler = [&](epoll_event& currevt) -> void {
+                // client connect request => Okay for EPOLLET, because we can drian the incoming client here
+                while (true) {
+                    sockaddr_in client_addr;
+                    auto ret = check_for_client(client_addr);
+                    if (ret < 0) {
+                        if (ret == -2) break;
+                        continue;
+                    }
+
+                    // global waiting clients
+                    setup_global_client(ret);
+                }
+            };
+
+            auto client_recv_handler = [&](epoll_event& currevt) -> void {
+                // client recv ready request => Okay for EPOLLET, because check_for_client_request will make sure the read is complete or the buffer is empty
+                auto currfd = currevt.data.fd;
+                auto events = currevt.events;
+                auto& client_info = global_waiting_clients[currfd];
+
+                auto ret = check_for_client_request(currfd, events, client_info);
+                if (ret == -2) {
+                    // explicitly re-register for EPOLLONESHOT
+                    if (EPOLLONESHOT_enabled) mod_epoll_interest(epoll_info, currfd, true);
+                    return;
+                }
+
+                // other error occurred
+                if (ret < 0 || HTTPVersion == HTTPv1_0) {
+                    rm_epoll_interest(process_epoll_info, currfd);
+                    global_waiting_clients.erase(currfd);
+                    close(currfd);
+                    return;
+                }
+
+                // explicitly re-register for EPOLLONESHOT
+                if (EPOLLONESHOT_enabled) mod_epoll_interest(epoll_info, currfd, false);
+                return;
+            };
+
+            auto client_send_handler = [&](epoll_event& currevt) -> void {
+                // client send ready request => Okay for EPOLLET, because check_for_client_send_request will make sure the send is complete or the buffer is full
+                auto currfd = currevt.data.fd;
+                auto events = currevt.events;
+                auto& client_info = global_waiting_clients[currfd];
+
+                auto ret = check_for_client_send_request(currfd, events, client_info);
+                if (ret == -2) {
+                    // explicitly re-register for EPOLLONESHOT
+                    if (EPOLLONESHOT_enabled) mod_epoll_interest(epoll_info, currfd, true);
+                    return;
+                }
+
+                // other error occurred
+                if (ret < 0 || HTTPVersion == HTTPv1_0) {
+                    rm_epoll_interest(process_epoll_info, currfd);
+                    global_waiting_clients.erase(currfd);
+                    close(currfd);
+                    return;
+                }
+
+                // explicitly re-register for EPOLLONESHOT
+                if (EPOLLONESHOT_enabled) mod_epoll_interest(epoll_info, currfd, false);
+                return;
+            };
+
+            auto garbage_handler = [](epoll_event& currevt) -> void {
+                cerr << " [*] Process: Weird " << currevt.data.fd << endl;
+                return;
+            };
+
+            // initialize the handler
+            handler[EPOLLRDHUP] = handler[EPOLLRDHUP | EPOLLIN] = handler[EPOLLRDHUP | EPOLLOUT] = handler[EPOLLRDHUP | EPOLLIN | EPOLLOUT] = client_disconnect_handler;
+            handler[EPOLLIN] = handler[EPOLLIN | EPOLLOUT] = client_recv_handler;
+            handler[EPOLLOUT] = client_send_handler;
+            handler[0] = garbage_handler;
 
             // prepare to accept
             if (add_epoll_interest(epoll_info, sfd, 0) == -1) {
                 cerr << "Error occurred during add_epoll_interest()." << endl;
                 return;
             }
-    
+
             // processing
             while (!server_terminated) {
                 // reset the variables
-                ret = 0;
                 num_of_events = 0;
     
                 // if no event is polled back
@@ -67,196 +148,44 @@ namespace server {
                 }
 
                 // classification
+                auto& currevt = epoll_buffers.get()[0];
+                auto currfd = currevt.data.fd;
+                auto events = currevt.events;
+
                 counter += num_of_events;
-                for (int index = 0; index < num_of_events; index++) {
-                    epoll_event *currevt = &(epoll_buffers.get()[index]);
-                    auto currfd = currevt->data.fd;
-                    auto events = currevt->events;
-
-                    if (currfd == sfd)
-                        client_connect_reqq.push(currevt);
-                    else
-                        q[events & events_filter]->push(currevt);
-                }
+                if (currfd == sfd)
+                    client_connect_handler(currevt);
+                else
+                    handler[events & events_filter](currevt);
     
-                // client disconnect request => Not okay for EPOLLET
-                while (client_disconnect_reqq.size() > 0) {
-                    epoll_event *currevt = client_disconnect_reqq.front();
-                    auto currfd = currevt->data.fd;
-                    auto events = currevt->events;
-
-                    rm_epoll_interest(process_epoll_info, currfd);
-                    global_waiting_clients.erase(currfd);
-                    close(currfd);
-
-                    client_disconnect_reqq.pop();
-                }
-
-                // client connect request => Not okay for EPOLLET
-                while (client_connect_reqq.size() > 0) {
-                    epoll_event *currevt = client_connect_reqq.front();
-                    auto currfd = currevt->data.fd;
-                    auto events = currevt->events;
-
-                    sockaddr_in client_addr;
-                    if ((ret = check_for_client(client_addr)) < 0) {
-                        // do nothing
-                        break;
-                    }
-
-                    // global waiting clients
-                    setup_global_client(ret);
-
-                    client_connect_reqq.pop();
-                }
-
-                // client recv ready request => Not okay for EPOLLET
-                while (client_recv_rdyq.size() > 0) {
-                    epoll_event *currevt = client_recv_rdyq.front();
-                    auto currfd = currevt->data.fd;
-                    auto events = currevt->events;
-                    CLIENT_INFO& client_info = global_waiting_clients[currfd];
-
-                    ret = check_for_client_request(currfd, events, client_info);
-                    if (ret == -2) {
-                        // explicitly re-register for EPOLLONESHOT
-                        if (EPOLLONESHOT_enabled) mod_epoll_interest(epoll_info, currfd, true);
-                        client_recv_rdyq.pop();
-                        continue;
-                    }
-
-                    // other error occurred
-                    if (ret < 0) {
-                        rm_epoll_interest(process_epoll_info, currfd);
-                        global_waiting_clients.erase(currfd);
-                        close(currfd);
-                        client_recv_rdyq.pop();
-                        continue;
-                    }
-
-                    if (HTTPVersion == HTTPv1_0) {
-                        rm_epoll_interest(process_epoll_info, currfd);
-                        global_waiting_clients.erase(currfd);
-                        close(currfd);
-                        client_recv_rdyq.pop();
-                        continue;
-                    }
-
-                    // explicitly re-register for EPOLLONESHOT
-                    if (EPOLLONESHOT_enabled) mod_epoll_interest(epoll_info, currfd, false);
-                    client_recv_rdyq.pop();
-                }
-
-                // client send ready request => Not okay for EPOLLET
-                while (client_send_rdyq.size() > 0) {
-                    epoll_event *currevt = client_connect_reqq.front();
-                    auto currfd = currevt->data.fd;
-                    auto events = currevt->events;
-                    CLIENT_INFO& client_info = global_waiting_clients[currfd];
-
-                    ret = check_for_client_send_request(currfd, events, client_info);
-                    if (ret == -2) {
-                        // explicitly re-register for EPOLLONESHOT
-                        if (EPOLLONESHOT_enabled) mod_epoll_interest(epoll_info, currfd, true);
-                        client_recv_rdyq.pop();
-                        continue;
-                    }
-
-                    // other error occurred
-                    if (ret < 0) {
-                        rm_epoll_interest(process_epoll_info, currfd);
-                        global_waiting_clients.erase(currfd);
-                        close(currfd);
-                        client_recv_rdyq.pop();
-                        continue;
-                    }
-
-                    if (HTTPVersion == HTTPv1_0) {
-                        rm_epoll_interest(process_epoll_info, currfd);
-                        global_waiting_clients.erase(currfd);
-                        close(currfd);
-                        client_recv_rdyq.pop();
-                        continue;
-                    }
-
-                    // explicitly re-register for EPOLLONESHOT
-                    if (EPOLLONESHOT_enabled) mod_epoll_interest(epoll_info, currfd, false);
-                    client_send_rdyq.pop();
-                }
-
-                while (garbage_q.size() > 0) {
-                    cerr << " [*][" << counter << "] Process: Weird " << garbage_q.front()->data.fd << endl;
-                    garbage_q.pop();
-                }
-
-                if (server_terminated) {
-                    cerr << " [*][" << counter << "] Process: Stop " << endl;
-                }
+                if (server_terminated) cerr << " [*][" << counter << "] Process: Stop " << endl;
             }
         }
     
         void master_thread() {
-            int num_of_events = 0, ret, dcfd;
+            int num_of_events = 0;
             uint32_t counter = 0;
             float rate;
 
-            queue<epoll_event*> client_disconnect_reqq, client_connect_reqq, client_recv_rdyq, client_send_rdyq, garbage_q;
-            unordered_map<int, queue<epoll_event*>*> q;
+            unordered_map<int, function<void(epoll_event&)>> handler;
             auto events_filter = EPOLLRDHUP | EPOLLIN | EPOLLOUT;
-            q[EPOLLRDHUP] = q[EPOLLRDHUP | EPOLLIN] = q[EPOLLRDHUP | EPOLLOUT] = q[EPOLLRDHUP | EPOLLIN | EPOLLOUT] = &client_disconnect_reqq;
-            q[EPOLLIN] = q[EPOLLIN | EPOLLOUT] = &client_recv_rdyq;
-            q[EPOLLOUT] = &client_send_rdyq;
-            q[0] = &garbage_q;
 
-            // block until start()
-            while (!server_ready) sleep(1);
-    
-            thread::id thread_id = this_thread::get_id();
-            auto& epoll_info = epoll_info_table[master.tid];
+            // block until inited
+            while (!server_inited) sleep(1);
+
+            auto thread_id = this_thread::get_id();
+            auto& epoll_info = epoll_info_table[thread_id];
             auto epoll_buffers = make_unique<epoll_event[]>(epoll_info.epoll_buffers_size);
 
-            // prepare to accept
-            if (add_epoll_interest(epoll_info, sfd, 0) == -1) {
-                cerr << "Error occurred during add_epoll_interest()." << endl;
-                return;
-            }
-    
-            // processing
-            while (!server_terminated) {
-                // reset the variables
-                ret = 0;
-                num_of_events = 0;
-    
-                // if no event is polled back
-                if ((num_of_events = wait_for_epoll_events(epoll_info, epoll_buffers.get())) == 0) {
-                    cerr << " [*] Master: Nobody comes in. timeout = " << epoll_info.epoll_timeout << endl;
-                    continue;
-                }
-
-                // classification
-                counter += num_of_events;
-                for (int index = 0; index < num_of_events; index++) {
-                    epoll_event *currevt = &(epoll_buffers.get()[index]);
-                    auto currfd = currevt->data.fd;
-                    auto events = currevt->events;
-
-                    if (currfd == sfd)
-                        client_connect_reqq.push(currevt);
-                    else
-                        q[events & events_filter]->push(currevt);
-                }
-    
-                // client connect request => Not okay for EPOLLET
-                while (client_connect_reqq.size() > 0) {
-                    epoll_event *currevt = client_connect_reqq.front();
-                    auto currfd = currevt->data.fd;
-                    auto events = currevt->events;
-
+            auto client_connect_handler = [&](epoll_event& currevt) -> void {
+                // client connect request => Okay for EPOLLET, because we can drian the incoming client here
+                while (true) {
                     // accept clients
                     sockaddr_in client_addr;
-                    if ((ret = check_for_client(client_addr)) <= 0) {
-                        // do nothing
-                        break;
+                    auto ret = check_for_client(client_addr);
+                    if (ret <= 0) {
+                        if (ret == -2) break;
+                        continue;
                     }
 
                     // TODO: setup each client entry for master thread, except epoll interest list
@@ -267,43 +196,66 @@ namespace server {
                     auto ptr = workers.begin();
                     advance(ptr, static_cast<int>(rate * workers.size()));
                     ptr->second.p.push(PIPE_MSG(ret));
+                }
+            };
 
-                    client_connect_reqq.pop();
+            auto garbage_handler = [](epoll_event& currevt) -> void {
+                cerr << " [*] Master: Weird " << currevt.data.fd << endl;
+                return;
+            };
+
+            // initialize the handler
+            handler[EPOLLIN] = handler[EPOLLIN | EPOLLOUT] = handler[EPOLLIN | EPOLLOUT | EPOLLRDHUP] = handler[EPOLLIN | EPOLLRDHUP] = client_connect_handler;
+            handler[EPOLLRDHUP] = handler[EPOLLRDHUP | EPOLLOUT] = garbage_handler;
+            handler[EPOLLOUT] = garbage_handler;
+            handler[0] = garbage_handler;
+
+            // block until ready
+            while (!server_ready) sleep(1);
+    
+            // prepare to accept
+            if (add_epoll_interest(epoll_info, sfd, 0) == -1) {
+                cerr << "Error occurred during add_epoll_interest()." << endl;
+                return;
+            }
+    
+            // processing
+            while (!server_terminated) {
+                // reset the variables
+                num_of_events = 0;
+    
+                // if no event is polled back
+                if ((num_of_events = wait_for_epoll_events(epoll_info, epoll_buffers.get())) == 0) {
+                    cerr << " [*] Master: Nobody comes in. timeout = " << epoll_info.epoll_timeout << endl;
+                    continue;
                 }
 
-                while (garbage_q.size() > 0) {
-                    cerr << " [*][" << counter << "] Master: Weird " << garbage_q.front()->data.fd << endl;
-                    garbage_q.pop();
-                }
+                // classification
+                auto& currevt = epoll_buffers.get()[0];
+                auto currfd = currevt.data.fd;
+                auto events = currevt.events;
 
-                if (server_terminated) {
-                    cerr << " [*][" << counter << "] Master: Stop " << endl;
-                }
+                counter += num_of_events;
+                if (currfd == sfd)
+                    client_connect_handler(currevt);
+                else
+                    handler[events & events_filter](currevt);
+    
+                if (server_terminated) cerr << " [*][" << counter << "] Master: Stop " << endl;
             }
         }
     
-        /* thread safety
-         * this function may:
-         * modify epoll_buffers => but this is only for local thread => it's okay
-         * modify waiting_clients => would remove client from this map, but the key is fd, and it is auto-increment. is this okay?
-         * modify worker epoll's interest list => would remove client from the struct. it's okay because of the internal mutex
-         */
         void worker_thread() {
-            int num_of_events = 0, ret;
+            int num_of_events = 0;
             uint32_t counter = 0;
 
-            queue<epoll_event*> client_disconnect_reqq, client_connect_reqq, client_recv_rdyq, client_send_rdyq, garbage_q;
-            unordered_map<int, queue<epoll_event*>*> q;
+            unordered_map<int, function<void(epoll_event&)>> handler;
             auto events_filter = EPOLLRDHUP | EPOLLIN | EPOLLOUT;
-            q[EPOLLRDHUP] = q[EPOLLRDHUP | EPOLLIN] = q[EPOLLRDHUP | EPOLLOUT] = q[EPOLLRDHUP | EPOLLIN | EPOLLOUT] = &client_disconnect_reqq;
-            q[EPOLLIN] = q[EPOLLIN | EPOLLOUT] = &client_recv_rdyq;
-            q[EPOLLOUT] = &client_send_rdyq;
-            q[0] = &garbage_q;
 
-            // block until start
-            while (!server_ready) sleep(1);
-    
-            thread::id thread_id = this_thread::get_id();
+            // block until inited
+            while (!server_inited) sleep(1);
+
+            auto thread_id = this_thread::get_id();
             auto& epoll_info = epoll_info_table[thread_id];
             auto epoll_buffers = make_unique<epoll_event[]>(epoll_info.epoll_buffers_size);
             auto& thread_info = workers[thread_id];
@@ -311,40 +263,15 @@ namespace server {
             bool EPOLLONESHOT_enabled = epoll_info.epoll_event_types & EPOLLONESHOT;
 
             // processing
-            while (!server_terminated) {
-                // reset the variables
-                ret = 0;
-                num_of_events = 0;
-    
-                // if no event is polled back
-                if ((num_of_events = wait_for_epoll_events(epoll_info, epoll_buffers.get())) == 0) {
-                    cerr << " [*] Worker: Nobody comes in. timeout = " << epoll_info.epoll_timeout << endl;
-                    continue;
-                }
+            auto client_disconnect_handler = [&](epoll_event& currevt) -> void {
+                // client disconnect request => Okay for EPOLLET, because we close the fd, no more request will come
+                auto currfd = currevt.data.fd;
 
-                // classification
-                counter += num_of_events;
-                for (int index = 0; index < num_of_events; index++) {
-                    epoll_event *currevt = &(epoll_buffers.get()[index]);
-                    auto currfd = currevt->data.fd;
-                    auto events = currevt->events;
+                disconnect_client(currfd, thread_info);
+            };
 
-                    if (currfd != masterfd)
-                        q[events & events_filter]->push(currevt);
-                }
-    
-                // client disconnect request => Not okay for EPOLLET
-                while (client_disconnect_reqq.size() > 0) {
-                    epoll_event *currevt = client_disconnect_reqq.front();
-                    auto currfd = currevt->data.fd;
-                    auto events = currevt->events;
-
-                    disconnect_client(currfd, thread_info);
-
-                    client_disconnect_reqq.pop();
-                }
-
-                // client connect request => Okay for EPOLLET
+            auto client_connect_handler = [&](epoll_event& currevt) -> void {
+                // client connect request => Okay for EPOLLET, because we can drian the incoming client here
                 while (true) {
                     // fetch one client message
                     auto ptr = thread_info.p.get();
@@ -357,77 +284,90 @@ namespace server {
                     setup_client(clientfd, thread_info, true);
                     thread_info.p.pop();
                 }
+            };
 
-                // client recv ready request => Not okay for EPOLLET
-                while (client_recv_rdyq.size() > 0) {
-                    epoll_event *currevt = client_recv_rdyq.front();
-                    auto currfd = currevt->data.fd;
-                    auto events = currevt->events;
-                    CLIENT_INFO& client_info = workers[thread_id].waiting_clients[currfd];
+            auto client_recv_handler = [&](epoll_event& currevt) -> void {
+                // client recv ready request => Okay for EPOLLET, because check_for_client_request will make sure the read is complete or the buffer is empty
+                auto currfd = currevt.data.fd;
+                auto events = currevt.events;
+                auto& client_info = workers[thread_id].waiting_clients[currfd];
 
-                    ret = check_for_client_request(currfd, events, client_info);
-                    if (ret == -2) {
-                        // explicitly re-register for EPOLLONESHOT
-                        if (EPOLLONESHOT_enabled) mod_epoll_interest(epoll_info, currfd, true);
-                        client_recv_rdyq.pop();
-                        continue;
-                    }
-
-                    // other error occurred
-                    if (ret < 0) {
-                        disconnect_client(currfd, thread_info);
-                        client_recv_rdyq.pop();
-                        continue;
-                    }
-
-                    if (HTTPVersion == HTTPv1_0) {
-                        disconnect_client(currfd, thread_info);
-                        client_recv_rdyq.pop();
-                        continue;
-                    }
-
-                    // explicitly re-register for EPOLLONESHOT, EPOLLOUT is excluded
-                    if (EPOLLONESHOT_enabled) mod_epoll_interest(epoll_info, currfd, false);
-                    client_recv_rdyq.pop();
+                auto ret = check_for_client_request(currfd, events, client_info);
+                if (ret == -2) {
+                    // explicitly re-register for EPOLLONESHOT
+                    if (EPOLLONESHOT_enabled) mod_epoll_interest(epoll_info, currfd, true);
+                    return;
                 }
 
-                // client send ready request => Not okay for EPOLLET
-                while (client_send_rdyq.size() > 0) {
-                    epoll_event *currevt = client_connect_reqq.front();
-                    auto currfd = currevt->data.fd;
-                    auto events = currevt->events;
-                    CLIENT_INFO& client_info = global_waiting_clients[currfd];
-
-                    ret = check_for_client_send_request(currfd, events, client_info);
-                    if (ret == -2) {
-                        // explicitly re-register for EPOLLONESHOT
-                        if (EPOLLONESHOT_enabled) mod_epoll_interest(epoll_info, currfd, true);
-                        client_recv_rdyq.pop();
-                        continue;
-                    }
-
-                    // other error occurred
-                    if (ret < 0) {
-                        disconnect_client(currfd, thread_info);
-                        client_recv_rdyq.pop();
-                        continue;
-                    }
-
-                    if (HTTPVersion == HTTPv1_0) {
-                        disconnect_client(currfd, thread_info);
-                        client_recv_rdyq.pop();
-                        continue;
-                    }
-
-                    // explicitly re-register for EPOLLONESHOT, EPOLLOUT is excluded
-                    if (EPOLLONESHOT_enabled) mod_epoll_interest(epoll_info, currfd, false);
-                    client_recv_rdyq.pop();
+                // other error occurred
+                if (ret < 0 || HTTPVersion == HTTPv1_0) {
+                    disconnect_client(currfd, thread_info);
+                    return;
                 }
 
-                while (garbage_q.size() > 0) {
-                    cerr << " [*][" << counter << "] Worker: Weird " << garbage_q.front()->data.fd << endl;
-                    garbage_q.pop();
+                // explicitly re-register for EPOLLONESHOT, EPOLLOUT is excluded
+                if (EPOLLONESHOT_enabled) mod_epoll_interest(epoll_info, currfd, false);
+                return;
+            };
+
+            auto client_send_handler = [&](epoll_event& currevt) -> void {
+                // client send ready request => Okay for EPOLLET, because check_for_client_send_request will make sure the send is complete or the buffer is full
+                auto currfd = currevt.data.fd;
+                auto events = currevt.events;
+                auto& client_info = global_waiting_clients[currfd];
+
+                auto ret = check_for_client_send_request(currfd, events, client_info);
+                if (ret == -2) {
+                    // explicitly re-register for EPOLLONESHOT
+                    if (EPOLLONESHOT_enabled) mod_epoll_interest(epoll_info, currfd, true);
+                    return;
                 }
+
+                // other error occurred
+                if (ret < 0 || HTTPVersion == HTTPv1_0) {
+                    disconnect_client(currfd, thread_info);
+                    return;
+                }
+
+                // explicitly re-register for EPOLLONESHOT, EPOLLOUT is excluded
+                if (EPOLLONESHOT_enabled) mod_epoll_interest(epoll_info, currfd, false);
+                return;
+            };
+
+            auto garbage_handler = [](epoll_event& currevt) -> void {
+                cerr << " [*] Worker: Weird " << currevt.data.fd << endl;
+                return;
+            };
+
+            // initialize the handler
+            handler[EPOLLRDHUP] = handler[EPOLLRDHUP | EPOLLIN] = handler[EPOLLRDHUP | EPOLLOUT] = handler[EPOLLRDHUP | EPOLLIN | EPOLLOUT] = client_disconnect_handler;
+            handler[EPOLLIN] = handler[EPOLLIN | EPOLLOUT] = client_recv_handler;
+            handler[EPOLLOUT] = client_send_handler;
+            handler[0] = garbage_handler;
+
+            // block until ready
+            while (!server_ready) sleep(1);
+    
+            while (!server_terminated) {
+                // reset the variables
+                num_of_events = 0;
+    
+                // if no event is polled back
+                if ((num_of_events = wait_for_epoll_events(epoll_info, epoll_buffers.get())) == 0) {
+                    cerr << " [*] Worker: Nobody comes in. timeout = " << epoll_info.epoll_timeout << endl;
+                    continue;
+                }
+
+                // classification
+                auto& currevt = epoll_buffers.get()[0];
+                auto currfd = currevt.data.fd;
+                auto events = currevt.events;
+
+                counter += num_of_events;
+                if (currfd == masterfd)
+                    client_connect_handler(currevt);
+                else
+                    handler[events & events_filter](currevt);
 
                 if (server_terminated) {
                     cerr << " [*][" << counter << "] Worker: Stop " << endl;
@@ -549,6 +489,7 @@ namespace server {
                 regex rule("(GET|POST|PUT|DELETE) (/[^ ]*) (HTTP/[0-9\\.]+)\r?\n([^\\s]+:( )*[^\\s]+\r?\n)*\r?\n");
                 smatch sm;
     
+                // must drain the read buffer here
                 while (ret = recv(client_info.cfd, buffer, BUFFER_SIZE, flags)) {
                     if (ret < 0) {
                         if (errno = EAGAIN || errno == EWOULDBLOCK) {
@@ -585,6 +526,8 @@ namespace server {
                 int ret;
                 const string body = client_info.client_buffer.resp_struct.body;
 
+                // must drain the send buffer here
+                // TODO: try what happened if buffer is not enough
                 ret = send(client_info.cfd, body.c_str(), body.size(), flags);
                 if (ret < 0) {
                     if (errno = EAGAIN || errno == EWOULDBLOCK) {
@@ -648,9 +591,9 @@ namespace server {
     
                 process_epoll_info = {
                     .epollfd = epoll_process_fd,
-                    .epoll_buffers_size = 1,
+                    .epoll_buffers_size = EPOLL_BUFFER_SIZE,
                     .epoll_timeout = 20000,
-                    .epoll_event_types = EPOLLIN | EPOLLRDHUP | EPOLLWAKEUP
+                    .epoll_event_types = EPOLLIN | EPOLLRDHUP | EPOLLET | EPOLLWAKEUP
                 };
                 if (affinity_enabled) set_cpu_affinity(cpu_no++);
 
@@ -672,9 +615,9 @@ namespace server {
     
                 epoll_info_table[master.tid] = {
                     .epollfd = epoll_master_fd,
-                    .epoll_buffers_size = 1,
+                    .epoll_buffers_size = EPOLL_BUFFER_SIZE,
                     .epoll_timeout = 20000,
-                    .epoll_event_types = EPOLLIN | EPOLLWAKEUP
+                    .epoll_event_types = EPOLLIN | EPOLLET | EPOLLWAKEUP
                 };
 
                 // add a event fd for signaling the stop event
@@ -696,9 +639,9 @@ namespace server {
 
                     epoll_info_table[temp.tid] = {
                         .epollfd = epoll_worker_fd,
-                        .epoll_buffers_size = 1,
+                        .epoll_buffers_size = EPOLL_BUFFER_SIZE,
                         .epoll_timeout = 20000,
-                        .epoll_event_types = EPOLLIN | EPOLLRDHUP | EPOLLWAKEUP
+                        .epoll_event_types = EPOLLIN | EPOLLRDHUP | EPOLLET | EPOLLWAKEUP
                     };
 
                     // initialize pipe
@@ -706,7 +649,7 @@ namespace server {
                     // add a event fd for signaling the stop event
                     add_epoll_interest(epoll_info_table[temp.tid], pipefd[0], 0);
                     // the pipe for incoming clients
-                    add_epoll_interest(epoll_info_table[temp.tid], workers[temp.tid].p.getExit(), EPOLLIN | EPOLLWAKEUP);
+                    add_epoll_interest(epoll_info_table[temp.tid], workers[temp.tid].p.getExit(), EPOLLIN | EPOLLET | EPOLLWAKEUP);
                 }
             }
 

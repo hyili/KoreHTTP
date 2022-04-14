@@ -1,4 +1,42 @@
 ### TODO
+- log by each thread
+    - according to the run_test, seems like only 1 worker thread is triggered during each round 10 concurrent connections
+- timeout disconnection support
+- persistent connection support
+- eBPF support
+- Redis support
+- UDP support
+- WebSocket support
+- HTTP protocol parser
+
+### BUGS
+- recycling queue delay issue + EPOLLET duplicate event => COMBO! => replace EPOLLET with EPOLLONESHOT can resolve this => but this needs more syscall => Resolved
+    - delay may comes from the latency of sequentially event processing
+    - if fd=10 EPOLLET generates 2 EPOLLRDHUP events, 1 is handled by worker and removed by master, then another 1 is handled by worker(epoll_ctl errno = 2), then a new client comes in which is assigned fd=10. but at this time, the remove request of fd=10 comes, master removed the wrong client which has fd=10...
+    - may encounter errno = 2 (no such file (client is closed, server not closed)) and errno = 9 (bad file descriptor (client & server are both closed))
+        - because fd with EPOLLET may be trigger more than once, during the process of handling previous event
+- nc not work => Resolved
+- HTTP/1.0 should actively close connection => too slow for master to close() => Resolved
+- message out-of-order issue, if the event is handled by different thread => Resolved
+- multithreaded server end still have some issue => Resolved
+- single thread server end still have some issue => Resolved
+- data structore can still be optimized - make use of cache
+- return message can still be optimized - reduce branch
+- new client message pipe can still be optimized - batch signal with boost::lockfree::queue
+- Because the new branchless implementation doesn't drain the request queue, EPOLLET won't be acceptable. using Level Trigger instead => Resolved
+
+### Done
+- hash map handler entry to reduce branch
+    - Try a EPOLLET friendly case which can reduce the use of request queue & number of system call
+    - Try to find the correspond handler by incoming request type
+    - always use epoll buffer max size = 1, and O(1) choose strategy to lower the latency
+- set CPU affinity
+- add compiler optimization option -O3
+- signal stop() with SIGINT
+    - Epoll Edge-Trigger would eat up all the events, stop() event won't accessible to all workers.
+    - Maybe wait for epoll_timeout?
+    - Use epoll_pwait() with sigmask to set the wake up signal.
+    - epoll_wait() & epoll_pwait() issue
 - Thread support
     - waiting_clients may have RACE issue
         - use individual waiting_clients map
@@ -37,43 +75,6 @@
     - epoll discussion
         - https://groups.google.com/g/linux.kernel/c/yVkl-7IRKwM
     - req_struct & resp_struct also has RACE issue => solve by an new struct CLIENT_BUFFER and aggregate into individual CLIENT_INFO
-- log by each thread
-    - according to the run_test, seems like only 1 worker thread is triggered during each round 10 concurrent connections
-- timeout disconnection support
-- persistent connection support
-- signal stop() with SIGINT
-    - Epoll Edge-Trigger would eat up all the events, stop() event won't accessible to all workers.
-    - Maybe wait for epoll_timeout?
-    - Use epoll_pwait() with sigmask to set the wake up signal.
-    - epoll_wait() & epoll_pwait() issue
-- Try a EPOLLET friendly case which can reduce the use of request queue
-- Try to find the correspond handler by incoming request type
-- use epoll buffer max size = 1, and O(1) choose strategy to lower the latency
-- set CPU affinity
-- add compiler optimization option -O3
-- eBPF support
-- Redis support
-- UDP support
-- WebSocket support
-- HTTP protocol parser
-
-
-### BUGS
-- recycling queue delay issue + EPOLLET duplicate event => COMBO! => replace EPOLLET with EPOLLONESHOT can resolve this => but this needs more syscall => Resolved
-    - delay may comes from the latency of sequentially event processing
-    - if fd=10 EPOLLET generates 2 EPOLLRDHUP events, 1 is handled by worker and removed by master, then another 1 is handled by worker(epoll_ctl errno = 2), then a new client comes in which is assigned fd=10. but at this time, the remove request of fd=10 comes, master removed the wrong client which has fd=10...
-    - may encounter errno = 2 (no such file (client is closed, server not closed)) and errno = 9 (bad file descriptor (client & server are both closed))
-        - because fd with EPOLLET may be trigger more than once, during the process of handling previous event
-- nc not work => Resolved
-- HTTP/1.0 should actively close connection => too slow for master to close() => Resolved
-- message out-of-order issue, if the event is handled by different thread => Resolved
-- multithreaded server end still have some issue => Resolved
-- single thread server end still have some issue => Resolved
-- data structore can still be optimized - make use of cache
-- return message can still be optimized - reduce branch
-- new client message pipe can still be optimized - batch signal with boost::lockfree::queue
-- Because the new branchless implementation doesn't drain the request queue, EPOLLET won't be acceptable. using Level Trigger instead => Resolved
-
 
 # Other issue
 - perf issue https://bugzilla.redhat.com/show_bug.cgi?id=1448402

@@ -12,6 +12,8 @@
 #include <arpa/inet.h>
 
 namespace server {
+    // EPOLL_BUFFER_SIZE must be 1 for EPOLLET
+    #define EPOLL_BUFFER_SIZE 1
     #define BUFFER_SIZE 4096
     #define PROCESS_MODE 3
     #define MASTER_MODE 1
