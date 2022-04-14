@@ -1,3 +1,5 @@
+#pragma once
+
 #include <iostream>
 #include <vector>
 #include <string>
@@ -432,7 +434,7 @@ namespace server {
     
         int check_for_client_request(int cfd, uint32_t events, CLIENT_INFO& client_info) {
             int ret = 0;
-            int flags = MSG_NOSIGNAL;
+            int flags = RECV_FLAGS;
             thread::id thread_id = this_thread::get_id();
     
             //cerr << " [" << thread_id << "] Worker: read something from " << cfd << endl;
@@ -459,7 +461,7 @@ namespace server {
 
         int check_for_client_send_request(int cfd, uint32_t events, CLIENT_INFO& client_info) {
             int ret = 0;
-            int flags = MSG_NOSIGNAL;
+            int flags = SEND_FLAGS;
             thread::id thread_id = this_thread::get_id();
 
             //cerr << " [" << thread_id << "] Worker: write something to " << cfd << endl;
@@ -484,13 +486,14 @@ namespace server {
             }
     
             req_handler = [](const CLIENT_INFO& client_info, CLIENT_BUFFER& client_buffer, int flags) -> int {
-                char buffer[BUFFER_SIZE] = {};
-                int ret;
-                regex rule("(GET|POST|PUT|DELETE) (/[^ ]*) (HTTP/[0-9\\.]+)\r?\n([^\\s]+:( )*[^\\s]+\r?\n)*\r?\n");
+                const static regex rule("(GET|POST|PUT|DELETE) (/[^ ]*) (HTTP/[0-9\\.]+)\r?\n([^\\s]+:( )*[^\\s]+\r?\n)*\r?\n");
                 smatch sm;
+                size_t buffer_size = RECV_BUFFER_SIZE;
+                char buffer[buffer_size] = {};
+                int ret;
     
                 // must drain the read buffer here
-                while (ret = recv(client_info.cfd, buffer, BUFFER_SIZE, flags)) {
+                while (ret = recv(client_info.cfd, buffer, buffer_size, flags)) {
                     if (ret < 0) {
                         if (errno = EAGAIN || errno == EWOULDBLOCK) {
                             //cerr << "No more data to read." << endl;
@@ -499,8 +502,9 @@ namespace server {
                         cerr << "Error occurred during recv(). errno = " << errno << endl;
                         return -1;
                     }
-                    client_buffer.buffer += buffer;
-                    memset(buffer, 0, BUFFER_SIZE);
+                    // TODO: BUGGGGGG => client_buffer.buffer += buffer;
+                    client_buffer.buffer.append(buffer, ret);
+                    memset(buffer, 0, buffer_size);
     
                     // if not a valid message
                     // use search not match here to keep find new request coming (ignore the invalid)
@@ -523,12 +527,11 @@ namespace server {
             };
     
             resp_handler = [](const CLIENT_INFO& client_info, CLIENT_BUFFER& client_buffer, int flags) -> int {
-                int ret;
-                const string body = client_info.client_buffer.resp_struct.body;
+                const string& body = client_info.client_buffer.resp_struct.body;
 
                 // must drain the send buffer here
                 // TODO: try what happened if buffer is not enough
-                ret = send(client_info.cfd, body.c_str(), body.size(), flags);
+                auto ret = send(client_info.cfd, body.c_str(), body.size(), flags);
                 if (ret < 0) {
                     if (errno = EAGAIN || errno == EWOULDBLOCK) {
                         //cerr << "No data sent." << endl;
@@ -591,9 +594,9 @@ namespace server {
     
                 process_epoll_info = {
                     .epollfd = epoll_process_fd,
-                    .epoll_buffers_size = EPOLL_BUFFER_SIZE,
-                    .epoll_timeout = 20000,
-                    .epoll_event_types = EPOLLIN | EPOLLRDHUP | EPOLLET | EPOLLWAKEUP
+                    .epoll_buffers_size = PROCESS_EPOLL_BUFFER_SIZE,
+                    .epoll_timeout = PROCESS_EPOLL_TIMEOUT,
+                    .epoll_event_types = PROCESS_EPOLL_MODE
                 };
                 if (affinity_enabled) set_cpu_affinity(cpu_no++);
 
@@ -615,9 +618,9 @@ namespace server {
     
                 epoll_info_table[master.tid] = {
                     .epollfd = epoll_master_fd,
-                    .epoll_buffers_size = EPOLL_BUFFER_SIZE,
-                    .epoll_timeout = 20000,
-                    .epoll_event_types = EPOLLIN | EPOLLET | EPOLLWAKEUP
+                    .epoll_buffers_size = MASTER_EPOLL_BUFFER_SIZE,
+                    .epoll_timeout = MASTER_EPOLL_TIMEOUT,
+                    .epoll_event_types = MASTER_EPOLL_MODE
                 };
 
                 // add a event fd for signaling the stop event
@@ -639,9 +642,9 @@ namespace server {
 
                     epoll_info_table[temp.tid] = {
                         .epollfd = epoll_worker_fd,
-                        .epoll_buffers_size = EPOLL_BUFFER_SIZE,
-                        .epoll_timeout = 20000,
-                        .epoll_event_types = EPOLLIN | EPOLLRDHUP | EPOLLET | EPOLLWAKEUP
+                        .epoll_buffers_size = WORKER_EPOLL_BUFFER_SIZE,
+                        .epoll_timeout = WORKER_EPOLL_TIMEOUT,
+                        .epoll_event_types = WORKER_EPOLL_MODE
                     };
 
                     // initialize pipe

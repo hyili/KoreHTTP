@@ -1,3 +1,4 @@
+#pragma once
 #include <iostream>
 #include <string>
 #include <unordered_map>
@@ -46,17 +47,18 @@ namespace client {
             };
         
             resp_handler = [](int sfd, generic::SIMPLE_HTTP_RESP &resp_struct) -> int {
+                size_t buffer_size = RECV_BUFFER_SIZE;
                 string resp;
                 int flags = 0, ret;
-                char buffer[BUFFER_SIZE];
+                char buffer[buffer_size];
         
-                while (ret = recv(sfd, buffer, BUFFER_SIZE, flags)) {
+                while (ret = recv(sfd, buffer, buffer_size, flags)) {
                     if (ret == -1) {
                         cerr << "Error occurred during recv(). errno = " << errno << endl;
                         return -1;
                     }
-                    resp += buffer;
-                    memset(buffer, 0, BUFFER_SIZE);
+                    resp.append(buffer, ret);
+                    memset(buffer, 0, buffer_size);
     
                     // parse the response
                     regex rule("(HTTP/[0-9\\.]+) ([0-9]{3}) ([^\\s]+)\r?\n\r?\n");

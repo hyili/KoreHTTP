@@ -24,8 +24,10 @@
 - return message can still be optimized - reduce branch
 - new client message pipe can still be optimized - batch signal with boost::lockfree::queue
 - Because the new branchless implementation doesn't drain the request queue, EPOLLET won't be acceptable. using Level Trigger instead => Resolved
+- when reading from recv(), and appending string. we should notice the return value of recv() which is the length of result => Resolved
 
 ### Done
+- move regex rule to static to prevent rebuilt, improves 6x throughput
 - hash map handler entry to reduce branch
     - Try a EPOLLET friendly case which can reduce the use of request queue & number of system call
     - Try to find the correspond handler by incoming request type
