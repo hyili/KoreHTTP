@@ -46,7 +46,11 @@
     - Maybe wait for epoll_timeout?
     - Use epoll_pwait() with sigmask to set the wake up signal.
     - epoll_wait() & epoll_pwait() issue
+- Try a EPOLLET friendly case which can reduce the use of request queue
+- Try to find the correspond handler by incoming request type
+- use epoll buffer max size = 1, and O(1) choose strategy to lower the latency
 - set CPU affinity
+- add compiler optimization option -O3
 - eBPF support
 - Redis support
 - UDP support
@@ -67,4 +71,9 @@
 - single thread server end still have some issue => Resolved
 - data structore can still be optimized - make use of cache
 - return message can still be optimized - reduce branch
-- add compiler optimization option -O
+- new client message pipe can still be optimized - batch signal with boost::lockfree::queue
+- Because the new branchless implementation doesn't drain the request queue, EPOLLET won't be acceptable. using Level Trigger instead => Resolved
+
+
+# Other issue
+- perf issue https://bugzilla.redhat.com/show_bug.cgi?id=1448402

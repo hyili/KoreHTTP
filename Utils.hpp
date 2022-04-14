@@ -190,6 +190,16 @@ namespace server {
 
         pthread_setaffinity_np(thread_info.thread_obj.native_handle(), sizeof(cpu_set_t), &cpu_set);
     }
+
+    void set_cpu_affinity(int cpu_no) {
+        cpu_set_t cpu_set;
+        // reset the set
+        CPU_ZERO(&cpu_set);
+        // set specific cpu set
+        CPU_SET(cpu_no, &cpu_set);
+
+        pthread_setaffinity_np(pthread_self(), sizeof(cpu_set_t), &cpu_set);
+    }
 }
 
 namespace client {
