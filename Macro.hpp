@@ -12,7 +12,7 @@
 #include <arpa/inet.h>
 
 namespace server {
-    #define BUFFER_SIZE 10
+    #define BUFFER_SIZE 4096
     #define PROCESS_MODE 3
     #define MASTER_MODE 1
     #define WORKER_MODE 2
@@ -20,5 +20,5 @@ namespace server {
 }
 
 namespace client {
-    #define BUFFER_SIZE 10
+    #define BUFFER_SIZE 4096
 }

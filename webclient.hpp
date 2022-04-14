@@ -26,7 +26,7 @@ namespace client {
         WebClient(int argc, char** argv): client_inited(false), client_ready(false), client_terminated(false) {
             if (parse_parameters(config, argc, argv) == -1) {
                 cerr << "Error occurred during parse_parameters()." << endl;
-                exit(-1);
+                terminate();
             }
     
             req_handler = [](int sfd, generic::SIMPLE_HTTP_REQ &req_struct) -> int {

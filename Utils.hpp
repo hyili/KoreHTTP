@@ -4,6 +4,8 @@
 #include "SERVERStruct.hpp"
 #include "Macro.hpp"
 
+#include <pthread.h>
+
 namespace generic {
     void show_req(SIMPLE_HTTP_REQ &req_struct) {
         std::cerr << "---------------------------------" << std::endl;
@@ -177,6 +179,16 @@ namespace server {
         }
     
         return num_of_events;
+    }
+
+    void set_cpu_affinity(int cpu_no, THREAD_INFO& thread_info) {
+        cpu_set_t cpu_set;
+        // reset the set
+        CPU_ZERO(&cpu_set);
+        // set specific cpu set
+        CPU_SET(cpu_no, &cpu_set);
+
+        pthread_setaffinity_np(thread_info.thread_obj.native_handle(), sizeof(cpu_set_t), &cpu_set);
     }
 }
 

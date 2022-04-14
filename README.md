@@ -46,6 +46,7 @@
     - Maybe wait for epoll_timeout?
     - Use epoll_pwait() with sigmask to set the wake up signal.
     - epoll_wait() & epoll_pwait() issue
+- set CPU affinity
 - eBPF support
 - Redis support
 - UDP support
@@ -62,4 +63,8 @@
 - nc not work => Resolved
 - HTTP/1.0 should actively close connection => too slow for master to close() => Resolved
 - message out-of-order issue, if the event is handled by different thread => Resolved
-- server end still have some issue => Resolved
+- multithreaded server end still have some issue => Resolved
+- single thread server end still have some issue => Resolved
+- data structore can still be optimized - make use of cache
+- return message can still be optimized - reduce branch
+- add compiler optimization option -O

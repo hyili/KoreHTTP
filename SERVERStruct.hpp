@@ -15,6 +15,12 @@
 #include "HTTPStruct.hpp"
 
 namespace server {
+    enum HTTP_PROTO {
+        HTTPv1_0,
+        HTTPv1_1,
+        HTTPv2_0
+    };
+
     struct CLIENT_BUFFER {
         std::string buffer;
         generic::SIMPLE_HTTP_REQ req_struct;
@@ -79,7 +85,10 @@ namespace server {
 
         void init() {
             flags |= O_NONBLOCK;
-            pipe2(pipefd, flags);
+            if (pipe2(pipefd, flags) != 0) {
+                std::cerr << "failed to initialize the inform pipe from master to worker" << std::endl;
+                std::terminate();
+            }
             is_inited = true;
             //std::cerr << "Pipe Init" << std::endl;
             //std::cerr << pipefd[0] << ":" << pipefd[1] << std::endl;
@@ -98,7 +107,10 @@ namespace server {
             assert(("pipe not inited", is_inited));
             // TODO: check result
             std::string data = msg.serialize();
-            write(pipefd[1], data.c_str(), data.size());
+            if (write(pipefd[1], data.c_str(), data.size()) == -1) {
+                std::cerr << "failed to inform workers about the new client" << std::endl;
+                std::terminate();
+            }
         }
     };
 
