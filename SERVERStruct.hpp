@@ -13,6 +13,7 @@
 #include <fcntl.h>
 
 #include "HTTPStruct.hpp"
+#include "Macro.hpp"
 
 namespace server {
     enum HTTP_PROTO {
@@ -173,7 +174,7 @@ namespace server {
     };
 
     struct THREAD_INFO {
-        PIPE<PIPE_MSG, 1024, 1024> p;
+        PIPE<PIPE_MSG, PIPE_BUFFER_SIZE, PIPE_MSG_SIZE> p;
         std::unordered_map<int, CLIENT_INFO> waiting_clients;
         std::thread thread_obj;
         std::thread::id tid;

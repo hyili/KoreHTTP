@@ -8,6 +8,7 @@
 #include <functional>
 #include <thread>
 #include <queue>
+#include <random>
 
 #include "Utils.hpp"
 
@@ -18,7 +19,7 @@ namespace server {
     class WebServer {
         HTTP_PROTO HTTPVersion;
         bool server_inited, server_ready, server_terminated;
-        bool affinity_enabled;
+        bool affinity_enabled, use_std_rndgen;
         int sfd, pipefd[2];
         unordered_map<string, string> config;
         unordered_map<int, CLIENT_INFO> global_waiting_clients;
@@ -26,6 +27,10 @@ namespace server {
         unordered_map<thread::id, THREAD_INFO> workers;
         EPOLL_INFO process_epoll_info;
         THREAD_INFO master;
+        // random number generator
+        random_device rnddev;
+        mt19937 stdgen;
+        uniform_int_distribution<> rndgen;
         uint32_t num_of_connection;
         uint32_t max_num_of_connection;
         uint32_t num_of_workers;
@@ -144,6 +149,7 @@ namespace server {
                 num_of_events = 0;
     
                 // if no event is polled back
+                memset(epoll_buffers.get(), 0, sizeof(epoll_event)*epoll_info.epoll_buffers_size);
                 if ((num_of_events = wait_for_epoll_events(epoll_info, epoll_buffers.get())) == 0) {
                     cerr << " [*] Process: Nobody comes in. timeout = " << epoll_info.epoll_timeout << endl;
                     continue;
@@ -193,10 +199,10 @@ namespace server {
                     // TODO: setup each client entry for master thread, except epoll interest list
                     setup_client(ret, master, false);
 
-                    // try RR
-                    while (static_cast<int>(rate = static_cast<float>(rand()) / RAND_MAX) == 1);
+                    // TODO: random number generator
+                    int random_number = random_number_generator();
                     auto ptr = workers.begin();
-                    advance(ptr, static_cast<int>(rate * workers.size()));
+                    advance(ptr, random_number);
                     ptr->second.p.push(PIPE_MSG(ret));
                 }
             };
@@ -227,6 +233,7 @@ namespace server {
                 num_of_events = 0;
     
                 // if no event is polled back
+                memset(epoll_buffers.get(), 0, sizeof(epoll_event)*epoll_info.epoll_buffers_size);
                 if ((num_of_events = wait_for_epoll_events(epoll_info, epoll_buffers.get())) == 0) {
                     cerr << " [*] Master: Nobody comes in. timeout = " << epoll_info.epoll_timeout << endl;
                     continue;
@@ -355,6 +362,7 @@ namespace server {
                 num_of_events = 0;
     
                 // if no event is polled back
+                memset(epoll_buffers.get(), 0, sizeof(epoll_event)*epoll_info.epoll_buffers_size);
                 if ((num_of_events = wait_for_epoll_events(epoll_info, epoll_buffers.get())) == 0) {
                     cerr << " [*] Worker: Nobody comes in. timeout = " << epoll_info.epoll_timeout << endl;
                     continue;
@@ -474,12 +482,23 @@ namespace server {
 
             return ret;
         }
+
+        int random_number_generator() {
+            int random_number = 0, rate;
+
+            if (!use_std_rndgen) {
+                while (static_cast<int>(rate = static_cast<float>(rand()) / RAND_MAX) == 1);
+                random_number = static_cast<int>(rate * workers.size());
+            } else random_number = rndgen(stdgen);
+
+            return random_number;
+        }
     public:
         WebServer() = delete;
         WebServer(const WebServer&) = delete;
         WebServer(WebServer&&) = delete;
         ~WebServer() {stop();}
-        WebServer(int argc, char** argv): server_inited(false), server_ready(false), server_terminated(false), affinity_enabled(false) {
+        WebServer(int argc, char** argv): server_inited(false), server_ready(false), server_terminated(false), affinity_enabled(false), use_std_rndgen(true), stdgen(rnddev()) {
             if (parse_parameters(config, argc, argv) == -1) {
                 cerr << "Error occurred during parse_parameters()." << endl;
                 terminate();
@@ -577,6 +596,10 @@ namespace server {
                 cerr << "Too many workers." << endl;
                 terminate();
             }
+
+            // random number generator
+            use_std_rndgen = false;
+            rndgen = uniform_int_distribution<>(0, num_of_workers-1);
 
             // TODO: #include <caasert> not work
             // assert(num_of_workers*2+1 < max_num_of_concurrency, "Too many workers.");

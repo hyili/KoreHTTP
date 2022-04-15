@@ -25,8 +25,10 @@
 - new client message pipe can still be optimized - batch signal with boost::lockfree::queue
 - Because the new branchless implementation doesn't drain the request queue, EPOLLET won't be acceptable. using Level Trigger instead => Resolved
 - when reading from recv(), and appending string. we should notice the return value of recv() which is the length of result => Resolved
+- server terminate issue, memset the epoll_buffers solves the issue, and unexpectedly improves the throughput by 1.5x => Resolved
 
 ### Done
+- using C++ standard uniform_int_distribution to generate the random value for request distribution, and improves 1.1x~1.2x througthput
 - move regex rule to static to prevent rebuilt, improves 6x throughput
 - hash map handler entry to reduce branch
     - Try a EPOLLET friendly case which can reduce the use of request queue & number of system call
