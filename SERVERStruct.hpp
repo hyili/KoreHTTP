@@ -24,12 +24,13 @@ namespace server {
 
     struct CLIENT_BUFFER {
         std::string buffer;
-        generic::SIMPLE_HTTP_REQ req_struct;
-        generic::SIMPLE_HTTP_RESP resp_struct;
+        std::unique_ptr<generic::SIMPLE_HTTP_REQ> req_struct;
+        std::unique_ptr<generic::SIMPLE_HTTP_RESP> resp_struct;
     };
 
     struct CLIENT_INFO {
         int cfd;
+        bool status;
         sockaddr_in client_addr;
         CLIENT_BUFFER client_buffer;
         uint32_t pending_remove;

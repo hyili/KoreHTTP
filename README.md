@@ -1,4 +1,8 @@
 ### TODO
+- prevent high latency req/resp
+    - improve PIPE design
+    - improve unordered_map, string... STL design (reduce dynamic memory allocation)
+        - reduce processing latency when massive concurrent connection occurs by elimintaing the table erase()
 - log by each thread
     - according to the run_test, seems like only 1 worker thread is triggered during each round 10 concurrent connections
 - timeout disconnection support
@@ -82,3 +86,8 @@
 
 # Other issue
 - perf issue https://bugzilla.redhat.com/show_bug.cgi?id=1448402
+
+# Useful tools
+- https://tigercosmos.xyz/post/2020/08/system/perf-basic/
+- valgrind
+- perf
