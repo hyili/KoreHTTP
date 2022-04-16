@@ -1,6 +1,16 @@
-all: test
+all:
 	rm -f server client
-	g++ -std=c++17 -O3 -g -o server webserver.cpp -lpthread
+	g++ -std=c++17 -o server webserver.cpp -lpthread
+	g++ -std=c++17 -o client webclient.cpp -lpthread
+
+optim:
+	rm -f server client
+	g++ -std=c++17 -O3 -o server webserver.cpp -lpthread
+	g++ -std=c++17 -o client webclient.cpp -lpthread
+
+debug:
+	rm -f server client
+	g++ -std=c++17 -g3 -o server webserver.cpp -lpthread
 	g++ -std=c++17 -o client webclient.cpp -lpthread
 
 test:

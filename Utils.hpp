@@ -4,6 +4,8 @@
 #include "SERVERStruct.hpp"
 #include "Macro.hpp"
 
+#include <chrono>
+
 #include <pthread.h>
 
 namespace generic {
@@ -19,6 +21,25 @@ namespace generic {
         std::cerr << "---------------------------------" << std::endl;
         std::cerr << "HTTP body: " << resp_struct.body << std::endl;
         std::cerr << "---------------------------------" << std::endl;
+    }
+
+    using HRC = std::chrono::high_resolution_clock;
+    using HRC_PT = std::chrono::time_point<HRC>;
+    using MS = std::chrono::milliseconds;
+
+    static HRC_PT t_start;
+    static HRC_PT t_end;
+
+    void clock_start() {
+        t_start = HRC::now();
+    }
+
+    void clock_end(int ms) {
+        t_end = HRC::now();
+        auto latency = std::chrono::duration_cast<MS>(t_end-t_start);
+        if (latency.count() > MS{ms}.count()) {
+            std::cerr << "Latency(ms): " << latency.count() << std::endl;
+        }
     }
 }
 namespace server {

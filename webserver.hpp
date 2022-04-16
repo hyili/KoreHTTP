@@ -27,13 +27,15 @@ namespace server {
         unordered_map<string, string> config;
         unordered_map<int, CLIENT_INFO> global_waiting_clients;
         unordered_map<thread::id, EPOLL_INFO> epoll_info_table;
-        unordered_map<thread::id, THREAD_INFO> workers;
+        unordered_map<thread::id, THREAD_INFO> thread_info_table;
+        vector<thread::id> workers;
         EPOLL_INFO process_epoll_info;
         THREAD_INFO master;
         // random number generator
         random_device rnddev;
         mt19937 stdgen;
         uniform_int_distribution<> rndgen;
+        uint32_t rrgen;
         uint32_t num_of_connection;
         uint32_t max_num_of_connection;
         uint32_t num_of_workers;
@@ -161,16 +163,23 @@ namespace server {
             }
 
             // processing
+            generic::clock_start();
             while (!server_terminated) {
+                if (num_of_events > 120) {
+                    cerr << "So many events " << num_of_events << endl;
+                    generic::clock_end(50);
+                }
                 // reset the variables
+                memset(epoll_buffers.get(), 0, sizeof(epoll_event)*num_of_events);
                 num_of_events = 0;
     
                 // if no event is polled back
-                memset(epoll_buffers.get(), 0, sizeof(epoll_event)*epoll_info.epoll_buffers_size);
                 if ((num_of_events = wait_for_epoll_events(epoll_info, epoll_buffers.get())) == 0) {
                     cerr << " [*] Process: Nobody comes in. timeout = " << epoll_info.epoll_timeout << endl;
+                    generic::clock_start();
                     continue;
                 }
+                generic::clock_start();
 
                 counter += num_of_events;
                 for (int i = 0; i < num_of_events; i++) {
@@ -184,7 +193,7 @@ namespace server {
                     else
                         handler[events & events_filter](currevt);
                 }
-    
+
                 if (server_terminated) cerr << " [*][" << counter << "] Process: Stop " << endl;
             }
         }
@@ -193,9 +202,6 @@ namespace server {
             int num_of_events = 0;
             uint32_t counter = 0;
             float rate;
-
-            unordered_map<int, function<void(epoll_event&)>> handler;
-            auto events_filter = EPOLLRDHUP | EPOLLIN | EPOLLOUT;
 
             // block until inited
             while (!server_inited) sleep(1);
@@ -208,10 +214,11 @@ namespace server {
             auto client_connect_handler = [&](epoll_event& currevt) -> void {
                 // client connect request => Okay for EPOLLET, because we can drian the incoming client here
                 auto currfd = currevt.data.fd;
+                sockaddr_in client_addr;
+                PIPE_MSG<int> temp(0);
 
                 while (true) {
                     // accept clients
-                    sockaddr_in client_addr;
                     auto ret = check_for_client(client_addr);
                     if (ret <= 0) {
                         if (ret == -2) break;
@@ -221,12 +228,11 @@ namespace server {
                     // TODO: setup each client entry for master thread, except epoll interest list
                     //setup_client(ret, master, false);
 
-                    // TODO: random number generator
+                    // random number generator
                     int random_number = random_number_generator();
-                    auto ptr = workers.begin();
-                    // TODO: performance problem
-                    advance(ptr, random_number);
-                    ptr->second.p.push(PIPE_MSG(ret));
+                    temp.setData(ret);
+                    // TODO: check if pushable
+                    thread_info_table[workers[random_number]].p.push(temp);
                 }
 
                 if (EPOLLONESHOT_enabled) mod_epoll_interest(epoll_info, currfd, false);
@@ -236,12 +242,6 @@ namespace server {
                 cerr << " [*] Master: Weird " << currevt.data.fd << endl;
                 return;
             };
-
-            // initialize the handler
-            handler[EPOLLIN] = handler[EPOLLIN | EPOLLOUT] = handler[EPOLLIN | EPOLLOUT | EPOLLRDHUP] = handler[EPOLLIN | EPOLLRDHUP] = client_connect_handler;
-            handler[EPOLLRDHUP] = handler[EPOLLRDHUP | EPOLLOUT] = garbage_handler;
-            handler[EPOLLOUT] = garbage_handler;
-            handler[0] = garbage_handler;
 
             // block until ready
             while (!server_ready) sleep(1);
@@ -255,10 +255,10 @@ namespace server {
             // processing
             while (!server_terminated) {
                 // reset the variables
+                memset(epoll_buffers.get(), 0, sizeof(epoll_event)*num_of_events);
                 num_of_events = 0;
     
                 // if no event is polled back
-                memset(epoll_buffers.get(), 0, sizeof(epoll_event)*epoll_info.epoll_buffers_size);
                 if ((num_of_events = wait_for_epoll_events(epoll_info, epoll_buffers.get())) == 0) {
                     cerr << " [*] Master: Nobody comes in. timeout = " << epoll_info.epoll_timeout << endl;
                     continue;
@@ -274,7 +274,7 @@ namespace server {
                     if (currfd == sfd)
                         client_connect_handler(currevt);
                     else
-                        handler[events & events_filter](currevt);
+                        garbage_handler(currevt);
                 }
     
                 if (server_terminated) cerr << " [*][" << counter << "] Master: Stop " << endl;
@@ -294,7 +294,7 @@ namespace server {
             auto thread_id = this_thread::get_id();
             auto& epoll_info = epoll_info_table[thread_id];
             auto epoll_buffers = make_unique<epoll_event[]>(epoll_info.epoll_buffers_size);
-            auto& thread_info = workers[thread_id];
+            auto& thread_info = thread_info_table[thread_id];
             auto masterfd = thread_info.p.getExit();
             bool EPOLLONESHOT_enabled = epoll_info.epoll_event_types & EPOLLONESHOT;
 
@@ -309,6 +309,9 @@ namespace server {
             auto client_connect_handler = [&](epoll_event& currevt) -> void {
                 // client connect request => Okay for EPOLLET, because we can drian the incoming client here
                 auto currfd = currevt.data.fd;
+
+                // drain the buffer
+                thread_info.p.getAll();
 
                 while (true) {
                     // fetch one client message
@@ -330,7 +333,7 @@ namespace server {
                 // client recv ready request => Okay for EPOLLET, because check_for_client_recv_request will make sure the read is complete or the buffer is empty
                 auto currfd = currevt.data.fd;
                 auto events = currevt.events;
-                auto& client_info = workers[thread_id].waiting_clients[currfd];
+                auto& client_info = thread_info_table[thread_id].waiting_clients[currfd];
 
                 auto ret = check_for_client_recv_request(currfd, events, client_info);
                 if (ret == -2) {
@@ -371,7 +374,7 @@ namespace server {
                 // client send ready request => Okay for EPOLLET, because check_for_client_send_request will make sure the send is complete or the buffer is full
                 auto currfd = currevt.data.fd;
                 auto events = currevt.events;
-                auto& client_info = workers[thread_id].waiting_clients[currfd];
+                auto& client_info = thread_info_table[thread_id].waiting_clients[currfd];
 
                 auto ret = check_for_client_send_request(currfd, events, client_info);
                 if (ret == -2) {
@@ -407,10 +410,10 @@ namespace server {
     
             while (!server_terminated) {
                 // reset the variables
+                memset(epoll_buffers.get(), 0, sizeof(epoll_event)*num_of_events);
                 num_of_events = 0;
     
                 // if no event is polled back
-                memset(epoll_buffers.get(), 0, sizeof(epoll_event)*epoll_info.epoll_buffers_size);
                 if ((num_of_events = wait_for_epoll_events(epoll_info, epoll_buffers.get())) == 0) {
                     cerr << " [*] Worker: Nobody comes in. timeout = " << epoll_info.epoll_timeout << endl;
                     continue;
@@ -462,7 +465,6 @@ namespace server {
 
             // add into epoll interest list
             if (enable) add_epoll_interest(epoll_info_table[thread_info.tid], cfd, 0);
-            //cerr << " [*] " << (enable ? "Worker:" : "Master:") << " new client from " << cfd << endl;
     
             return 0;
         }
@@ -475,7 +477,7 @@ namespace server {
             global_waiting_clients[cfd].client_buffer.req_struct.reset();
             global_waiting_clients[cfd].client_buffer.resp_struct.reset();
 
-            close(cfd);
+            if (close(cfd) != 0) cerr << "Close failed on " << cfd << endl;
         }
 
         void disconnect_client(int cfd, THREAD_INFO& thread_info) {
@@ -486,7 +488,7 @@ namespace server {
             thread_info.waiting_clients[cfd].client_buffer.req_struct.reset();
             thread_info.waiting_clients[cfd].client_buffer.resp_struct.reset();
 
-            close(cfd);
+            if (close(cfd) != 0) cerr << "Close failed on " << cfd << endl;
         }
 
         int check_for_client(sockaddr_in& client_addr) {
@@ -496,6 +498,7 @@ namespace server {
             if (accept_new_client(sfd, cfd, reinterpret_cast<sockaddr*>(&client_addr)) != 0) {
                 if (errno = EAGAIN || errno == EWOULDBLOCK) {
                     //cerr << "No connection to accept." << endl;
+                    errno = 0;
                     return -2;
                 }
                 cerr << "Error occurred during accept_new_client()." << endl;
@@ -510,13 +513,12 @@ namespace server {
             int flags = RECV_FLAGS;
             thread::id thread_id = this_thread::get_id();
     
-            //cerr << " [" << thread_id << "] Worker: read something from " << cfd << endl;
+            //cerr << " [" << thread_id << "] read something from " << cfd << endl;
             if ((ret = req_handler(client_info, client_info.client_buffer, flags)) == -1) {
-                cerr << " [" << thread_id << "] Worker: Connection to client closed. ip: " << inet_ntoa(client_info.client_addr.sin_addr) << ", port: " << client_info.client_addr.sin_port << endl;
+                cerr << " [" << thread_id << "] Connection to client closed. ip: " << inet_ntoa(client_info.client_addr.sin_addr) << ", port: " << client_info.client_addr.sin_port << endl;
                 return ret;
             }
-            // do nothing if EAGAIN
-            //cerr << " [" << thread_id << "] Worker: read success" << endl;
+            //cerr << " [" << thread_id << "] read success" << endl;
 
             return ret;
         }
@@ -526,23 +528,32 @@ namespace server {
             int flags = SEND_FLAGS;
             thread::id thread_id = this_thread::get_id();
 
-            //cerr << " [" << thread_id << "] Worker: write something to " << cfd << endl;
+            //cerr << " [" << thread_id << "] write something to " << cfd << endl;
             if ((ret = resp_handler(client_info, client_info.client_buffer, flags)) == -1) {
-                cerr << " [" << thread_id << "] Worker: Connection to client closed. ip: " << inet_ntoa(client_info.client_addr.sin_addr) << ", port: " << client_info.client_addr.sin_port << endl;
+                cerr << " [" << thread_id << "] Connection to client closed. ip: " << inet_ntoa(client_info.client_addr.sin_addr) << ", port: " << client_info.client_addr.sin_port << endl;
                 return ret;
             }
-            // do nothing if EAGAIN
-            //cerr << " [" << thread_id << "] Worker: write success" << endl;
+            //cerr << " [" << thread_id << "] write success" << endl;
 
             return ret;
         }
 
         int random_number_generator() {
-            int random_number = 0, rate;
+            int random_number = 0;
+            float rate;
+
+            // TODO: round robin
+            // TODO: if we add a 10000 loop, it would be much faster to process the incoming connection
+            // => which indicates we don't need to go out to the while loop and blocked at epoll_wait(), we can wait inside instead (shorter path)
+            // => if the connection speed is lower, the latency & throughput is lower
+            // => if the connection speed is higher, the latency & throughput is higher
+            // => so, why don't we just use blocked accept on master_thread?
+            if (++rrgen < num_of_workers) return rrgen;
+            else return rrgen = 0;
 
             if (!use_std_rndgen) {
                 while (static_cast<int>(rate = static_cast<float>(rand()) / RAND_MAX) == 1);
-                random_number = static_cast<int>(rate * workers.size());
+                random_number = static_cast<int>(rate * num_of_workers);
             } else random_number = rndgen(stdgen);
 
             return random_number;
@@ -570,14 +581,14 @@ namespace server {
                     if (ret < 0) {
                         if (errno = EAGAIN || errno == EWOULDBLOCK) {
                             //cerr << "No more data to read." << endl;
+                            errno = 0;
                             return -2;
                         }
                         cerr << "Error occurred during recv(). errno = " << errno << endl;
                         return -1;
                     }
-                    // TODO: BUGGGGGG => client_buffer.buffer += buffer;
                     client_buffer.buffer.append(buffer, ret);
-                    memset(buffer, 0, buffer_size);
+                    memset(buffer, 0, ret);
     
                     // if not a valid message
                     // use search not match here to keep find new request coming (ignore the invalid)
@@ -604,11 +615,12 @@ namespace server {
                 const string& body = client_info.client_buffer.resp_struct->body;
 
                 // must drain the send buffer here
-                // TODO: try what happened if buffer is not enough
+                // TODO: make a test to try what happened if buffer is not enough to hold the incoming data
                 auto ret = send(client_info.cfd, body.c_str(), body.size(), flags);
                 if (ret < 0) {
                     if (errno = EAGAIN || errno == EWOULDBLOCK) {
                         //cerr << "No data sent." << endl;
+                        errno = 0;
                         return -2;
                     }
                     cerr << "Error occurred during send(). errno = " << errno << endl;
@@ -631,8 +643,8 @@ namespace server {
                 return -1;
             }
     
-            // pipe
-            if (pipe(pipefd) == -1) {
+            // NONBLOCKING pipe
+            if (pipe2(pipefd, O_NONBLOCK) == -1) {
                 cerr << "Error occurred during pipe()." << endl;
                 return -1;
             }
@@ -646,14 +658,16 @@ namespace server {
             // thread workers, 0: for single thread server
             num_of_workers = NUM_OF_WORKERS;
             max_num_of_concurrency = thread::hardware_concurrency();
-            affinity_enabled = num_of_workers < max_num_of_concurrency;
+            //affinity_enabled = num_of_workers < max_num_of_concurrency;
+            affinity_enabled = false;
             if (num_of_workers >= max_num_of_concurrency*2) {
                 cerr << "Too many workers." << endl;
                 terminate();
             }
 
             // random number generator
-            use_std_rndgen = false;
+            use_std_rndgen = true;
+            rrgen = 0;
             rndgen = uniform_int_distribution<>(0, num_of_workers-1);
 
             // TODO: #include <caasert> not work
@@ -709,8 +723,9 @@ namespace server {
                         .thread_obj = thread(&WebServer::worker_thread, this)
                     };
                     temp.tid = temp.thread_obj.get_id();
-                    workers[temp.tid] = move(temp);
-                    if (affinity_enabled) set_cpu_affinity(cpu_no++, workers[temp.tid]);
+                    thread_info_table[temp.tid] = move(temp);
+                    workers.push_back(temp.tid);
+                    if (affinity_enabled) set_cpu_affinity(cpu_no++, thread_info_table[temp.tid]);
 
                     // create epoll instance
                     if (create_epoll_instance(epoll_worker_fd) != 0) {
@@ -726,11 +741,11 @@ namespace server {
                     };
 
                     // initialize pipe
-                    workers[temp.tid].p.init();
+                    thread_info_table[temp.tid].p.init();
                     // add a event fd for signaling the stop event
                     add_epoll_interest(epoll_info_table[temp.tid], pipefd[0], 0);
                     // the pipe for incoming clients
-                    add_epoll_interest(epoll_info_table[temp.tid], workers[temp.tid].p.getExit(), EPOLLIN | EPOLLET | EPOLLWAKEUP);
+                    add_epoll_interest(epoll_info_table[temp.tid], thread_info_table[temp.tid].p.getExit(), 0);
                 }
             }
 
@@ -753,7 +768,6 @@ namespace server {
             return 0;
         }
 
-        // TODO: Still some errors here
         void stop() noexcept {
             if (server_terminated) return;
             if (!server_inited) return;
@@ -770,7 +784,7 @@ namespace server {
                     }
                 } else {
                     master.thread_obj.join();
-                    for (auto& [thread_id, thread_info]: workers) {
+                    for (auto& [thread_id, thread_info]: thread_info_table) {
                         thread_info.thread_obj.join();
                         for (auto& [cfd, client_info]: thread_info.waiting_clients) {
                             if (cfd != pipefd[0] && client_info.status) disconnect_client(cfd, thread_info);

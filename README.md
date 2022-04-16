@@ -30,6 +30,23 @@
 - Because the new branchless implementation doesn't drain the request queue, EPOLLET won't be acceptable. using Level Trigger instead => Resolved
 - when reading from recv(), and appending string. we should notice the return value of recv() which is the length of result => Resolved
 - server terminate issue, memset the epoll_buffers solves the issue, and unexpectedly improves the throughput by 1.5x => Resolved
+- something weird happened, see below
+    - which means a new file descriptor fd=54,55 are created before we unregister the previous fd=54,55. it always happens in master-worker mode with similar timing(20000~60000/200000) and amount(64~65/200000) => PIPE_MSG_SIZE id full
+    ```
+ [add_epoll_interest] Error occurred during epoll_ctl(). errno = 17, fd = 54
+ [add_epoll_interest] Error occurred during epoll_ctl(). errno = 17, fd = 54
+ [add_epoll_interest] Error occurred during epoll_ctl(). errno = 17, fd = 54
+ [add_epoll_interest] Error occurred during epoll_ctl(). errno = 17, fd = 55
+ [add_epoll_interest] Error occurred during epoll_ctl(). errno = 17, fd = 55
+ [add_epoll_interest] Error occurred during epoll_ctl(). errno = 17, fd = 55
+
+    ```
+    - PIPE stoi() would failed
+    ```
+  terminate called after throwing an instance of 'std::invalid_argument'
+  what():  stoi
+
+    ```
 
 ### Done
 - using C++ standard uniform_int_distribution to generate the random value for request distribution, and improves 1.1x~1.2x througthput

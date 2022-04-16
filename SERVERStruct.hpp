@@ -36,36 +36,39 @@ namespace server {
         uint32_t pending_remove;
     };
 
+    template<typename U>
     class PIPE_MSG {
-        int _data;
-        std::string deli;
+        U _data;
 
     public:
-        PIPE_MSG(): deli(";"), _data(-1) {};
-        PIPE_MSG(int data): deli(";"), _data(data) {};
+        PIPE_MSG(): _data(-1) {};
+        PIPE_MSG(U data): _data(data) {};
 
-        std::string serialize() {
-            std::string ans = std::to_string(_data) + deli;
-            return ans;
+        void serialize(char* buffer) {
+            /*int* ptr = &_data;
+            char* cptr = reinterpret_cast<char*>(ptr);
+            for (int i = 0; i < sizeof(int); i++) {
+                buffer[i] = cptr[i];
+            }*/
+            U* ptr = reinterpret_cast<U*>(buffer);
+            *ptr = _data;
         }
 
-        bool deserialize(std::string& in) {
-            int loc;
-            if ((loc = in.find(deli)) != std::string::npos) {
-                std::string ss = in.substr(0, loc);
-                //std::cerr << "deser" << ss << ":" << ss.size() << std::endl;
-                _data = stoi(ss);
-                in.erase(0, loc+1);
-                return true;
-            }
-            return false;
+        void deserialize(const char* buffer) {
+            /*int* ptr = &_data;
+            char* cptr = reinterpret_cast<char*>(ptr);
+            for (int i = 0; i < sizeof(int); i++) {
+                cptr[i] = buffer[begin+i];
+            }*/
+            const U* ptr = reinterpret_cast<const U*>(buffer);
+            _data = *ptr;
         }
 
-        int getData() {
+        U getData() {
             return _data;
         }
 
-        void setData(int data) {
+        void setData(U data) {
             _data = data;
         }
     };
@@ -76,6 +79,7 @@ namespace server {
         bool is_inited;
         int pipefd[2];
         int flags;
+
     public:
         PIPE_SEND() : is_inited(false), flags(0) {};
         ~PIPE_SEND() {
@@ -105,11 +109,24 @@ namespace server {
         }
 
         // push new data into pipe
+        void push(T& msg) {
+            assert(("pipe not inited", is_inited));
+            // TODO: check result
+            char data[sizeof(int)];
+            msg.serialize(data);
+            if (write(pipefd[1], data, sizeof(int)) == -1) {
+                std::cerr << "failed to inform workers about the new client" << std::endl;
+                std::terminate();
+            }
+        }
+
+        // push new data into pipe
         void push(T&& msg) {
             assert(("pipe not inited", is_inited));
             // TODO: check result
-            std::string data = msg.serialize();
-            if (write(pipefd[1], data.c_str(), data.size()) == -1) {
+            char data[sizeof(int)];
+            msg.serialize(data);
+            if (write(pipefd[1], data, sizeof(int)) == -1) {
                 std::cerr << "failed to inform workers about the new client" << std::endl;
                 std::terminate();
             }
@@ -120,7 +137,7 @@ namespace server {
     class PIPE : public PIPE_SEND<T> {
         // ring buffer
         size_t sz;
-        std::array<T, msgsize+1> msg;
+        std::array<T, msgsize> msg;
         char buffer[bufsize];
         std::string data_remain;
         int head, tail;
@@ -143,21 +160,41 @@ namespace server {
             return sz;
         }
 
+        bool isFull() {
+            return sz == msgsize;
+        }
+
+        void getAll() {
+            int ret;
+
+            // drain the pipe buffer
+            while (ret = read(this->pipefd[0], buffer, bufsize)) {
+                // TODO: check result
+                if (errno == EAGAIN || errno == EWOULDBLOCK) {
+                    // errno is set only when error occurs, so we should reset it back to 0
+                    errno = 0;
+                    break;
+                }
+                data_remain.append(buffer, ret);
+                memset(buffer, 0, ret);
+            }
+
+            int size_of_msg = sizeof(int);
+            int end = size_of_msg;
+            const char* head = data_remain.c_str();
+            while (!isFull() && (end <= data_remain.size())) {
+                msg[tail].deserialize(head);
+                head += size_of_msg;
+                end += size_of_msg;
+                tailIncrease();
+                ++sz;
+            }
+            data_remain.erase(0, end-size_of_msg);
+        }
+
         // retrieve from pipe & return constructed obj pointer
         T* get() {
             int target = head;
-            int ret;
-
-            while (ret = read(this->pipefd[0], buffer, bufsize) >= 0) {
-                // TODO: check result
-                if (ret == EAGAIN || ret == EWOULDBLOCK) break;
-                data_remain += buffer;
-                memset(buffer, 0, bufsize);
-                while (size() <= msgsize && msg[tail].deserialize(data_remain)) {
-                    tailIncrease();
-                    ++sz;
-                }
-            }
 
             if (size() > 0) {
                 return &(msg[target]);
@@ -175,7 +212,7 @@ namespace server {
     };
 
     struct THREAD_INFO {
-        PIPE<PIPE_MSG, PIPE_BUFFER_SIZE, PIPE_MSG_SIZE> p;
+        PIPE<PIPE_MSG<int>, PIPE_MSG_SIZE, PIPE_BUFFER_SIZE> p;
         std::unordered_map<int, CLIENT_INFO> waiting_clients;
         std::thread thread_obj;
         std::thread::id tid;
