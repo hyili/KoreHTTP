@@ -1,3 +1,11 @@
+### Feature
+- Data Hotpath optimization
+- CPU Affinity
+- Fewer branches with hash maps
+- Fewer dynamic memory allcation
+- Multithread
+- Event-Driven (Support EPOLLET & EPOLLONESHOT)
+
 ### TODO
 - prevent high latency req/resp
     - improve PIPE design
@@ -5,6 +13,12 @@
         - reduce processing latency when massive concurrent connection occurs by elimintaing the table erase()
 - log by each thread
     - according to the run_test, seems like only 1 worker thread is triggered during each round 10 concurrent connections
+- if we add a 10000 loop in master dispatcher, it would be much faster to process the incoming connection
+    - which indicates we don't need to go out to the while loop and blocked at epoll_wait(), we can wait inside instead (shorter path)
+    - if the connection speed is lower, the latency is higher & throughput is lower
+    - if the connection speed is higher, the latency is lower & throughput is higher
+    - so, why don't we just use blocked accept on master_thread?
+- try to reduce EPOLLONESHOT branch by constexpr if optimization
 - timeout disconnection support
 - persistent connection support
 - eBPF support
@@ -41,7 +55,7 @@
  [add_epoll_interest] Error occurred during epoll_ctl(). errno = 17, fd = 55
 
     ```
-    - PIPE stoi() would failed
+    - PIPE stoi() would failed => Resolved
     ```
   terminate called after throwing an instance of 'std::invalid_argument'
   what():  stoi
@@ -49,6 +63,7 @@
     ```
 
 ### Done
+- refine process_thread, master_thread, and worker_thread with hotpath knowledge, achieve 1.2x throughput
 - using C++ standard uniform_int_distribution to generate the random value for request distribution, and improves 1.1x~1.2x througthput
 - move regex rule to static to prevent rebuilt, improves 6x throughput
 - hash map handler entry to reduce branch
@@ -106,5 +121,5 @@
 
 # Useful tools
 - https://tigercosmos.xyz/post/2020/08/system/perf-basic/
-- valgrind
-- perf
+- valgrind --leak-check=full --show-leak-kinds=all ./cmd
+- perf record -g -F 10000 ./cmd

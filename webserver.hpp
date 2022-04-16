@@ -15,6 +15,7 @@
 using namespace std;
 
 namespace server {
+    const static regex rule("(GET|POST|PUT|DELETE) (/[^ ]*) (HTTP/[0-9\\.]+)\r*\n([^\\s]+:( )*[^\\s]+\r*\n)*\r*\n");
     using SIMPLE_HTTP_REQ = generic::SIMPLE_HTTP_REQ;
     using SIMPLE_HTTP_RESP = generic::SIMPLE_HTTP_RESP;
 
@@ -52,7 +53,7 @@ namespace server {
             auto& epoll_info = process_epoll_info;
             auto epoll_process_fd = epoll_info.epollfd;
             auto epoll_buffers = make_unique<epoll_event[]>(epoll_info.epoll_buffers_size);
-            bool EPOLLONESHOT_enabled = epoll_info.epoll_event_types & EPOLLONESHOT;
+            constexpr bool EPOLLONESHOT_enabled = PROCESS_EPOLL_MODE & EPOLLONESHOT;
 
             auto client_disconnect_handler = [&](epoll_event& currevt) -> void {
                 // client disconnect request => Okay for EPOLLET, because we close the fd, no more request will come
@@ -68,16 +69,11 @@ namespace server {
                 while (true) {
                     sockaddr_in client_addr;
                     auto ret = check_for_client(client_addr);
-                    if (ret < 0) {
-                        if (ret == -2) break;
-                        continue;
-                    }
-
-                    // global waiting clients
-                    setup_global_client(ret);
+                    if (ret > 1) setup_global_client(ret);
+                    if (ret == 1) break;
                 }
 
-                if (EPOLLONESHOT_enabled) mod_epoll_interest(epoll_info, currfd, false);
+                if constexpr (EPOLLONESHOT_enabled) mod_epoll_interest(epoll_info, currfd, false);
             };
 
             auto client_recv_handler = [&](epoll_event& currevt) -> void {
@@ -87,37 +83,33 @@ namespace server {
                 auto& client_info = global_waiting_clients[currfd];
 
                 auto ret = check_for_client_recv_request(currfd, events, client_info);
-                if (ret == -2) {
-                    // explicitly re-register for EPOLLONESHOT
-                    if (EPOLLONESHOT_enabled) mod_epoll_interest(epoll_info, currfd, false);
-                    return;
-                }
+                if (ret == 0) {
+                    ret = check_for_client_send_request(currfd, events, client_info);
+                    if (ret == 0 && HTTPVersion != HTTPv1_0) {
+                        // explicitly re-register for EPOLLONESHOT
+                        if constexpr (EPOLLONESHOT_enabled) mod_epoll_interest(epoll_info, currfd, false);
+                        return;
+                    }
 
-                // other error occurred
-                if (ret < 0) {
+                    if (ret == 1) {
+                        // explicitly re-register for EPOLLONESHOT
+                        if constexpr (EPOLLONESHOT_enabled) mod_epoll_interest(epoll_info, currfd, true);
+                        return;
+                    }
+
+                    // other error occurred
                     disconnect_global_client(currfd);
                     return;
                 }
 
-                // TODO: temporary
-                client_info.client_buffer.resp_struct = make_unique<SIMPLE_HTTP_RESP>();
-                client_info.client_buffer.resp_struct->body = client_info.client_buffer.req_struct->version + " 200 Ok\r\n\r\n";
-
-                ret = check_for_client_send_request(currfd, events, client_info);
-                if (ret == -2) {
+                if (ret == 1) {
                     // explicitly re-register for EPOLLONESHOT
-                    if (EPOLLONESHOT_enabled) mod_epoll_interest(epoll_info, currfd, true);
+                    if constexpr (EPOLLONESHOT_enabled) mod_epoll_interest(epoll_info, currfd, false);
                     return;
                 }
 
                 // other error occurred
-                if (ret < 0 || HTTPVersion == HTTPv1_0) {
-                    disconnect_global_client(currfd);
-                    return;
-                }
-
-                // explicitly re-register for EPOLLONESHOT
-                if (EPOLLONESHOT_enabled) mod_epoll_interest(epoll_info, currfd, false);
+                disconnect_global_client(currfd);
                 return;
             };
 
@@ -128,20 +120,20 @@ namespace server {
                 auto& client_info = global_waiting_clients[currfd];
 
                 auto ret = check_for_client_send_request(currfd, events, client_info);
-                if (ret == -2) {
+                if (ret == 0) {
                     // explicitly re-register for EPOLLONESHOT
-                    if (EPOLLONESHOT_enabled) mod_epoll_interest(epoll_info, currfd, true);
+                    if constexpr (EPOLLONESHOT_enabled) mod_epoll_interest(epoll_info, currfd, false);
+                    return;
+                }
+
+                if (ret == 1) {
+                    // explicitly re-register for EPOLLONESHOT
+                    if constexpr (EPOLLONESHOT_enabled) mod_epoll_interest(epoll_info, currfd, true);
                     return;
                 }
 
                 // other error occurred
-                if (ret < 0 || HTTPVersion == HTTPv1_0) {
-                    disconnect_global_client(currfd);
-                    return;
-                }
-
-                // explicitly re-register for EPOLLONESHOT
-                if (EPOLLONESHOT_enabled) mod_epoll_interest(epoll_info, currfd, false);
+                disconnect_global_client(currfd);
                 return;
             };
 
@@ -169,6 +161,7 @@ namespace server {
                     cerr << "So many events " << num_of_events << endl;
                     generic::clock_end(50);
                 }
+
                 // reset the variables
                 memset(epoll_buffers.get(), 0, sizeof(epoll_event)*num_of_events);
                 num_of_events = 0;
@@ -209,7 +202,7 @@ namespace server {
             auto thread_id = this_thread::get_id();
             auto& epoll_info = epoll_info_table[thread_id];
             auto epoll_buffers = make_unique<epoll_event[]>(epoll_info.epoll_buffers_size);
-            bool EPOLLONESHOT_enabled = epoll_info.epoll_event_types & EPOLLONESHOT;
+            constexpr bool EPOLLONESHOT_enabled = MASTER_EPOLL_MODE & EPOLLONESHOT;
 
             auto client_connect_handler = [&](epoll_event& currevt) -> void {
                 // client connect request => Okay for EPOLLET, because we can drian the incoming client here
@@ -220,22 +213,20 @@ namespace server {
                 while (true) {
                     // accept clients
                     auto ret = check_for_client(client_addr);
-                    if (ret <= 0) {
-                        if (ret == -2) break;
-                        continue;
+                    if (ret > 1) {
+                        // TODO: setup each client entry for master thread, except epoll interest list
+                        //setup_client(ret, master, false);
+
+                        // random number generator
+                        int random_number = random_number_generator();
+                        temp.setData(ret);
+                        // TODO: check if pushable
+                        thread_info_table[workers[random_number]].p.push(temp);
                     }
-
-                    // TODO: setup each client entry for master thread, except epoll interest list
-                    //setup_client(ret, master, false);
-
-                    // random number generator
-                    int random_number = random_number_generator();
-                    temp.setData(ret);
-                    // TODO: check if pushable
-                    thread_info_table[workers[random_number]].p.push(temp);
+                    if (ret == 1) break;
                 }
 
-                if (EPOLLONESHOT_enabled) mod_epoll_interest(epoll_info, currfd, false);
+                if constexpr (EPOLLONESHOT_enabled) mod_epoll_interest(epoll_info, currfd, false);
             };
 
             auto garbage_handler = [](epoll_event& currevt) -> void {
@@ -296,7 +287,7 @@ namespace server {
             auto epoll_buffers = make_unique<epoll_event[]>(epoll_info.epoll_buffers_size);
             auto& thread_info = thread_info_table[thread_id];
             auto masterfd = thread_info.p.getExit();
-            bool EPOLLONESHOT_enabled = epoll_info.epoll_event_types & EPOLLONESHOT;
+            constexpr bool EPOLLONESHOT_enabled = WORKER_EPOLL_MODE & EPOLLONESHOT;
 
             // processing
             auto client_disconnect_handler = [&](epoll_event& currevt) -> void {
@@ -326,7 +317,7 @@ namespace server {
                     thread_info.p.pop();
                 }
 
-                if (EPOLLONESHOT_enabled) mod_epoll_interest(epoll_info, currfd, false);
+                if constexpr (EPOLLONESHOT_enabled) mod_epoll_interest(epoll_info, currfd, false);
             };
 
             auto client_recv_handler = [&](epoll_event& currevt) -> void {
@@ -336,37 +327,33 @@ namespace server {
                 auto& client_info = thread_info_table[thread_id].waiting_clients[currfd];
 
                 auto ret = check_for_client_recv_request(currfd, events, client_info);
-                if (ret == -2) {
-                    // explicitly re-register for EPOLLONESHOT
-                    if (EPOLLONESHOT_enabled) mod_epoll_interest(epoll_info, currfd, false);
-                    return;
-                }
+                if (ret == 0) {
+                    ret = check_for_client_send_request(currfd, events, client_info);
+                    if (ret == 0 && HTTPVersion != HTTPv1_0) {
+                        // explicitly re-register for EPOLLONESHOT
+                        if constexpr (EPOLLONESHOT_enabled) mod_epoll_interest(epoll_info, currfd, false);
+                        return;
+                    }
 
-                // other error occurred
-                if (ret < 0) {
+                    if (ret == 1) {
+                        // explicitly re-register for EPOLLONESHOT
+                        if constexpr (EPOLLONESHOT_enabled) mod_epoll_interest(epoll_info, currfd, true);
+                        return;
+                    }
+
+                    // other error occurred
                     disconnect_client(currfd, thread_info);
                     return;
                 }
 
-                // TODO: temporary
-                client_info.client_buffer.resp_struct = make_unique<SIMPLE_HTTP_RESP>();
-                client_info.client_buffer.resp_struct->body = client_info.client_buffer.req_struct->version + " 200 Ok\r\n\r\n";
-
-                ret = check_for_client_send_request(currfd, events, client_info);
-                if (ret == -2) {
+                if (ret == 1) {
                     // explicitly re-register for EPOLLONESHOT
-                    if (EPOLLONESHOT_enabled) mod_epoll_interest(epoll_info, currfd, true);
+                    if constexpr (EPOLLONESHOT_enabled) mod_epoll_interest(epoll_info, currfd, false);
                     return;
                 }
 
                 // other error occurred
-                if (ret < 0 || HTTPVersion == HTTPv1_0) {
-                    disconnect_client(currfd, thread_info);
-                    return;
-                }
-
-                // explicitly re-register for EPOLLONESHOT, EPOLLOUT is excluded
-                if (EPOLLONESHOT_enabled) mod_epoll_interest(epoll_info, currfd, false);
+                disconnect_client(currfd, thread_info);
                 return;
             };
 
@@ -377,20 +364,20 @@ namespace server {
                 auto& client_info = thread_info_table[thread_id].waiting_clients[currfd];
 
                 auto ret = check_for_client_send_request(currfd, events, client_info);
-                if (ret == -2) {
+                if (ret == 0) {
                     // explicitly re-register for EPOLLONESHOT
-                    if (EPOLLONESHOT_enabled) mod_epoll_interest(epoll_info, currfd, true);
+                    if constexpr (EPOLLONESHOT_enabled) mod_epoll_interest(epoll_info, currfd, false);
+                    return;
+                }
+
+                if (ret == 1) {
+                    // explicitly re-register for EPOLLONESHOT
+                    if constexpr (EPOLLONESHOT_enabled) mod_epoll_interest(epoll_info, currfd, true);
                     return;
                 }
 
                 // other error occurred
-                if (ret < 0 || HTTPVersion == HTTPv1_0) {
-                    disconnect_client(currfd, thread_info);
-                    return;
-                }
-
-                // explicitly re-register for EPOLLONESHOT, EPOLLOUT is excluded
-                if (EPOLLONESHOT_enabled) mod_epoll_interest(epoll_info, currfd, false);
+                disconnect_client(currfd, thread_info);
                 return;
             };
 
@@ -474,8 +461,8 @@ namespace server {
             rm_epoll_interest(process_epoll_info, cfd);
 
             global_waiting_clients[cfd].status = false;
-            global_waiting_clients[cfd].client_buffer.req_struct.reset();
-            global_waiting_clients[cfd].client_buffer.resp_struct.reset();
+            global_waiting_clients[cfd].client_buffer.req_struct = nullptr;
+            global_waiting_clients[cfd].client_buffer.resp_struct = nullptr;
 
             if (close(cfd) != 0) cerr << "Close failed on " << cfd << endl;
         }
@@ -485,8 +472,8 @@ namespace server {
             rm_epoll_interest(epoll_info_table[thread_info.tid], cfd);
 
             thread_info.waiting_clients[cfd].status = false;
-            thread_info.waiting_clients[cfd].client_buffer.req_struct.reset();
-            thread_info.waiting_clients[cfd].client_buffer.resp_struct.reset();
+            thread_info.waiting_clients[cfd].client_buffer.req_struct = nullptr;
+            thread_info.waiting_clients[cfd].client_buffer.resp_struct = nullptr;
 
             if (close(cfd) != 0) cerr << "Close failed on " << cfd << endl;
         }
@@ -499,7 +486,7 @@ namespace server {
                 if (errno = EAGAIN || errno == EWOULDBLOCK) {
                     //cerr << "No connection to accept." << endl;
                     errno = 0;
-                    return -2;
+                    return 1;
                 }
                 cerr << "Error occurred during accept_new_client()." << endl;
                 return -1;
@@ -511,10 +498,10 @@ namespace server {
         int check_for_client_recv_request(int cfd, uint32_t events, CLIENT_INFO& client_info) {
             int ret = 0;
             int flags = RECV_FLAGS;
-            thread::id thread_id = this_thread::get_id();
     
             //cerr << " [" << thread_id << "] read something from " << cfd << endl;
             if ((ret = req_handler(client_info, client_info.client_buffer, flags)) == -1) {
+                thread::id thread_id = this_thread::get_id();
                 cerr << " [" << thread_id << "] Connection to client closed. ip: " << inet_ntoa(client_info.client_addr.sin_addr) << ", port: " << client_info.client_addr.sin_port << endl;
                 return ret;
             }
@@ -526,10 +513,10 @@ namespace server {
         int check_for_client_send_request(int cfd, uint32_t events, CLIENT_INFO& client_info) {
             int ret = 0;
             int flags = SEND_FLAGS;
-            thread::id thread_id = this_thread::get_id();
 
             //cerr << " [" << thread_id << "] write something to " << cfd << endl;
             if ((ret = resp_handler(client_info, client_info.client_buffer, flags)) == -1) {
+                thread::id thread_id = this_thread::get_id();
                 cerr << " [" << thread_id << "] Connection to client closed. ip: " << inet_ntoa(client_info.client_addr.sin_addr) << ", port: " << client_info.client_addr.sin_port << endl;
                 return ret;
             }
@@ -543,11 +530,6 @@ namespace server {
             float rate;
 
             // TODO: round robin
-            // TODO: if we add a 10000 loop, it would be much faster to process the incoming connection
-            // => which indicates we don't need to go out to the while loop and blocked at epoll_wait(), we can wait inside instead (shorter path)
-            // => if the connection speed is lower, the latency & throughput is lower
-            // => if the connection speed is higher, the latency & throughput is higher
-            // => so, why don't we just use blocked accept on master_thread?
             if (++rrgen < num_of_workers) return rrgen;
             else return rrgen = 0;
 
@@ -570,7 +552,6 @@ namespace server {
             }
     
             req_handler = [](const CLIENT_INFO& client_info, CLIENT_BUFFER& client_buffer, int flags) -> int {
-                const static regex rule("(GET|POST|PUT|DELETE) (/[^ ]*) (HTTP/[0-9\\.]+)\r?\n([^\\s]+:( )*[^\\s]+\r?\n)*\r?\n");
                 smatch sm;
                 size_t buffer_size = RECV_BUFFER_SIZE;
                 char buffer[buffer_size] = {};
@@ -582,7 +563,7 @@ namespace server {
                         if (errno = EAGAIN || errno == EWOULDBLOCK) {
                             //cerr << "No more data to read." << endl;
                             errno = 0;
-                            return -2;
+                            return 1;
                         }
                         cerr << "Error occurred during recv(). errno = " << errno << endl;
                         return -1;
@@ -593,10 +574,10 @@ namespace server {
                     // if not a valid message
                     // use search not match here to keep find new request coming (ignore the invalid)
                     if (!regex_search(client_buffer.buffer, sm, rule)) continue;
-    
+
                     // split the request, and fill into req_struct
-                    client_buffer.req_struct = make_unique<SIMPLE_HTTP_REQ>();
-                    *client_buffer.req_struct = {
+                    if (client_buffer.req_struct == nullptr) client_buffer.req_struct = make_unique<SIMPLE_HTTP_REQ>();
+                    *(client_buffer.req_struct) = {
                         .method = sm[1],
                         .uripath = sm[2],
                         .version = sm[3]
@@ -605,6 +586,10 @@ namespace server {
                     // TODO: reset the request buffer
                     client_buffer.buffer.clear();
     
+                    // built response according to request
+                    if (client_buffer.resp_struct == nullptr) client_buffer.resp_struct = make_unique<SIMPLE_HTTP_RESP>();
+                    client_buffer.resp_struct->body = client_buffer.req_struct->version + " 200 OK\r\nConnection: Keep-alive\r\nContent-Length: 13\r\nContent-Type: text/html\r\n\r\nHello World!!";
+
                     return 0;
                 }
     
@@ -621,15 +606,12 @@ namespace server {
                     if (errno = EAGAIN || errno == EWOULDBLOCK) {
                         //cerr << "No data sent." << endl;
                         errno = 0;
-                        return -2;
+                        return 1;
                     }
                     cerr << "Error occurred during send(). errno = " << errno << endl;
                     return -1;
                 }
 
-                // TODO: reset the request struct
-                client_buffer.req_struct->version = "";
-     
                 return 0;
             };
         }
@@ -649,7 +631,7 @@ namespace server {
                 return -1;
             }
 
-            HTTPVersion = HTTPv1_0;
+            HTTPVersion = HTTPv1_1;
 
             // limitation
             num_of_connection = 0;
@@ -658,8 +640,7 @@ namespace server {
             // thread workers, 0: for single thread server
             num_of_workers = NUM_OF_WORKERS;
             max_num_of_concurrency = thread::hardware_concurrency();
-            //affinity_enabled = num_of_workers < max_num_of_concurrency;
-            affinity_enabled = false;
+            affinity_enabled = num_of_workers < max_num_of_concurrency;
             if (num_of_workers >= max_num_of_concurrency*2) {
                 cerr << "Too many workers." << endl;
                 terminate();

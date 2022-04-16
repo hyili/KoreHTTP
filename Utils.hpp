@@ -115,7 +115,7 @@ namespace server {
         }
     
         // listen
-        int req_q_len = 100;
+        int req_q_len = LISTEN_QUEUE_SIZE;
         if (listen(sfd, req_q_len) != 0) {
             std::cerr << "Error occurred during listen(). errno = " << errno << std::endl;
             return -1;
