@@ -1,3 +1,7 @@
+KoreHTTP
+===
+Aims on low latency message exchange.
+
 ### Feature
 - With C++17 STL + EPOLL + SOCKET/IO
 - Data Hotpath optimization
@@ -46,22 +50,20 @@
 - when reading from recv(), and appending string. we should notice the return value of recv() which is the length of result => Resolved
 - server terminate issue, memset the epoll_buffers solves the issue, and unexpectedly improves the throughput by 1.5x => Resolved
 - something weird happened, see below
-    - which means a new file descriptor fd=54,55 are created before we unregister the previous fd=54,55. it always happens in master-worker mode with similar timing(20000~60000/200000) and amount(64~65/200000) => PIPE_MSG_SIZE id full
-    ```
- [add_epoll_interest] Error occurred during epoll_ctl(). errno = 17, fd = 54
- [add_epoll_interest] Error occurred during epoll_ctl(). errno = 17, fd = 54
- [add_epoll_interest] Error occurred during epoll_ctl(). errno = 17, fd = 54
- [add_epoll_interest] Error occurred during epoll_ctl(). errno = 17, fd = 55
- [add_epoll_interest] Error occurred during epoll_ctl(). errno = 17, fd = 55
- [add_epoll_interest] Error occurred during epoll_ctl(). errno = 17, fd = 55
-
-    ```
-    - PIPE stoi() would failed => Resolved
-    ```
-  terminate called after throwing an instance of 'std::invalid_argument'
-  what():  stoi
-
-    ```
+    - which means a new file descriptor fd=54,55 are created before we unregister the previous fd=54,55. it always happens in master-worker mode with similar timing(20000\~60000/200000) and amount(64\~65/200000) => PIPE_MSG_SIZE id full
+```
+\[add_epoll_interest\] Error occurred during epoll_ctl(). errno = 17, fd = 54
+\[add_epoll_interest\] Error occurred during epoll_ctl(). errno = 17, fd = 54
+\[add_epoll_interest\] Error occurred during epoll_ctl(). errno = 17, fd = 54
+\[add_epoll_interest\] Error occurred during epoll_ctl(). errno = 17, fd = 55
+\[add_epoll_interest\] Error occurred during epoll_ctl(). errno = 17, fd = 55
+\[add_epoll_interest\] Error occurred during epoll_ctl(). errno = 17, fd = 55
+```
+- PIPE stoi() would failed => Resolved
+```
+terminate called after throwing an instance of 'std::invalid_argument'
+what():  stoi
+```
 
 ### Done
 - refine process_thread, master_thread, and worker_thread with hotpath knowledge, achieve 1.2x throughput
