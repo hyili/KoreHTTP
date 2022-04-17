@@ -483,7 +483,7 @@ namespace server {
     
             memset(&client_addr, 0, sizeof(client_addr));
             if (accept_new_client(sfd, cfd, reinterpret_cast<sockaddr*>(&client_addr)) != 0) {
-                if (errno = EAGAIN || errno == EWOULDBLOCK) {
+                if (errno == EAGAIN || errno == EWOULDBLOCK) {
                     //cerr << "No connection to accept." << endl;
                     errno = 0;
                     return 1;
@@ -555,9 +555,9 @@ namespace server {
                 int ret;
     
                 // must drain the read buffer here
-                while (ret = recv(client_info.cfd, buffer, RECV_BUFFER_SIZE, flags)) {
+                while ((ret = recv(client_info.cfd, buffer, RECV_BUFFER_SIZE, flags))) {
                     if (ret < 0) {
-                        if (errno = EAGAIN || errno == EWOULDBLOCK) {
+                        if (errno == EAGAIN || errno == EWOULDBLOCK) {
                             //cerr << "No more data to read." << endl;
                             errno = 0;
                             return 1;
@@ -600,7 +600,7 @@ namespace server {
                 // TODO: make a test to try what happened if buffer is not enough to hold the incoming data
                 auto ret = send(client_info.cfd, body.c_str(), body.size(), flags);
                 if (ret < 0) {
-                    if (errno = EAGAIN || errno == EWOULDBLOCK) {
+                    if (errno == EAGAIN || errno == EWOULDBLOCK) {
                         //cerr << "No data sent." << endl;
                         errno = 0;
                         return 1;

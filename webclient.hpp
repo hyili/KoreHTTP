@@ -52,7 +52,7 @@ namespace client {
                 int flags = 0, ret;
                 char buffer[buffer_size];
         
-                while (ret = recv(sfd, buffer, buffer_size, flags)) {
+                while ((ret = recv(sfd, buffer, buffer_size, flags))) {
                     if (ret == -1) {
                         cerr << "Error occurred during recv(). errno = " << errno << endl;
                         return -1;
