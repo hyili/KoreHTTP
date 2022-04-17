@@ -17,6 +17,12 @@ test:
 	rm -f run_test
 	g++ -std=c++17 -o run_test run_test.cpp -lpthread
 
+clean:
+	rm -f server client run_test
+
+unrestrict:
+	sudo sh -c " echo 0 > /proc/sys/kernel/kptr_restrict"
+
 #profile:
 #	perf record -g -F 10000 ./server -h localhost -p 3122
 #	perf report -i perf.data

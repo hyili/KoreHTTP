@@ -1,10 +1,11 @@
 ### Feature
+- With C++17 STL + EPOLL + SOCKET/IO
 - Data Hotpath optimization
 - CPU Affinity
 - Fewer branches with hash maps
 - Fewer dynamic memory allcation
 - Multithread
-- Event-Driven (Support EPOLLET & EPOLLONESHOT)
+- Event-Driven
 
 ### TODO
 - prevent high latency req/resp

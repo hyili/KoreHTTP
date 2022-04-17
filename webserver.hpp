@@ -62,7 +62,7 @@ namespace server {
                 disconnect_global_client(currfd);
             };
 
-            auto client_connect_handler = [&](epoll_event& currevt) -> void {
+            auto client_connect_handler = [&, EPOLLONESHOT_enabled](epoll_event& currevt) -> void {
                 // client connect request => Okay for EPOLLET, because we can drian the incoming client here
                 auto currfd = currevt.data.fd;
 
@@ -76,7 +76,7 @@ namespace server {
                 if constexpr (EPOLLONESHOT_enabled) mod_epoll_interest(epoll_info, currfd, false);
             };
 
-            auto client_recv_handler = [&](epoll_event& currevt) -> void {
+            auto client_recv_handler = [&, EPOLLONESHOT_enabled](epoll_event& currevt) -> void {
                 // client recv ready request => Okay for EPOLLET, because check_for_client_recv_request will make sure the read is complete or the buffer is empty
                 auto currfd = currevt.data.fd;
                 auto events = currevt.events;
@@ -113,7 +113,7 @@ namespace server {
                 return;
             };
 
-            auto client_send_handler = [&](epoll_event& currevt) -> void {
+            auto client_send_handler = [&, EPOLLONESHOT_enabled](epoll_event& currevt) -> void {
                 // client send ready request => Okay for EPOLLET, because check_for_client_send_request will make sure the send is complete or the buffer is full
                 auto currfd = currevt.data.fd;
                 auto events = currevt.events;
@@ -137,7 +137,7 @@ namespace server {
                 return;
             };
 
-            auto garbage_handler = [](epoll_event& currevt) -> void {
+            auto garbage_handler = [&](epoll_event& currevt) -> void {
                 cerr << " [*] Process: Weird " << currevt.data.fd << endl;
                 return;
             };
@@ -204,7 +204,7 @@ namespace server {
             auto epoll_buffers = make_unique<epoll_event[]>(epoll_info.epoll_buffers_size);
             constexpr bool EPOLLONESHOT_enabled = MASTER_EPOLL_MODE & EPOLLONESHOT;
 
-            auto client_connect_handler = [&](epoll_event& currevt) -> void {
+            auto client_connect_handler = [&, EPOLLONESHOT_enabled](epoll_event& currevt) -> void {
                 // client connect request => Okay for EPOLLET, because we can drian the incoming client here
                 auto currfd = currevt.data.fd;
                 sockaddr_in client_addr;
@@ -229,7 +229,7 @@ namespace server {
                 if constexpr (EPOLLONESHOT_enabled) mod_epoll_interest(epoll_info, currfd, false);
             };
 
-            auto garbage_handler = [](epoll_event& currevt) -> void {
+            auto garbage_handler = [&](epoll_event& currevt) -> void {
                 cerr << " [*] Master: Weird " << currevt.data.fd << endl;
                 return;
             };
@@ -297,7 +297,7 @@ namespace server {
                 disconnect_client(currfd, thread_info);
             };
 
-            auto client_connect_handler = [&](epoll_event& currevt) -> void {
+            auto client_connect_handler = [&, EPOLLONESHOT_enabled](epoll_event& currevt) -> void {
                 // client connect request => Okay for EPOLLET, because we can drian the incoming client here
                 auto currfd = currevt.data.fd;
 
@@ -320,11 +320,11 @@ namespace server {
                 if constexpr (EPOLLONESHOT_enabled) mod_epoll_interest(epoll_info, currfd, false);
             };
 
-            auto client_recv_handler = [&](epoll_event& currevt) -> void {
+            auto client_recv_handler = [&, EPOLLONESHOT_enabled](epoll_event& currevt) -> void {
                 // client recv ready request => Okay for EPOLLET, because check_for_client_recv_request will make sure the read is complete or the buffer is empty
                 auto currfd = currevt.data.fd;
                 auto events = currevt.events;
-                auto& client_info = thread_info_table[thread_id].waiting_clients[currfd];
+                auto& client_info = thread_info.waiting_clients[currfd];
 
                 auto ret = check_for_client_recv_request(currfd, events, client_info);
                 if (ret == 0) {
@@ -357,11 +357,11 @@ namespace server {
                 return;
             };
 
-            auto client_send_handler = [&](epoll_event& currevt) -> void {
+            auto client_send_handler = [&, EPOLLONESHOT_enabled](epoll_event& currevt) -> void {
                 // client send ready request => Okay for EPOLLET, because check_for_client_send_request will make sure the send is complete or the buffer is full
                 auto currfd = currevt.data.fd;
                 auto events = currevt.events;
-                auto& client_info = thread_info_table[thread_id].waiting_clients[currfd];
+                auto& client_info = thread_info.waiting_clients[currfd];
 
                 auto ret = check_for_client_send_request(currfd, events, client_info);
                 if (ret == 0) {
@@ -381,7 +381,7 @@ namespace server {
                 return;
             };
 
-            auto garbage_handler = [](epoll_event& currevt) -> void {
+            auto garbage_handler = [&](epoll_event& currevt) -> void {
                 cerr << " [*] Worker: Weird " << currevt.data.fd << endl;
                 return;
             };
@@ -501,8 +501,7 @@ namespace server {
     
             //cerr << " [" << thread_id << "] read something from " << cfd << endl;
             if ((ret = req_handler(client_info, client_info.client_buffer, flags)) == -1) {
-                thread::id thread_id = this_thread::get_id();
-                cerr << " [" << thread_id << "] Connection to client closed. ip: " << inet_ntoa(client_info.client_addr.sin_addr) << ", port: " << client_info.client_addr.sin_port << endl;
+                cerr << " [" << this_thread::get_id() << "] Connection to client closed. ip: " << inet_ntoa(client_info.client_addr.sin_addr) << ", port: " << client_info.client_addr.sin_port << endl;
                 return ret;
             }
             //cerr << " [" << thread_id << "] read success" << endl;
@@ -516,8 +515,7 @@ namespace server {
 
             //cerr << " [" << thread_id << "] write something to " << cfd << endl;
             if ((ret = resp_handler(client_info, client_info.client_buffer, flags)) == -1) {
-                thread::id thread_id = this_thread::get_id();
-                cerr << " [" << thread_id << "] Connection to client closed. ip: " << inet_ntoa(client_info.client_addr.sin_addr) << ", port: " << client_info.client_addr.sin_port << endl;
+                cerr << " [" << this_thread::get_id() << "] Connection to client closed. ip: " << inet_ntoa(client_info.client_addr.sin_addr) << ", port: " << client_info.client_addr.sin_port << endl;
                 return ret;
             }
             //cerr << " [" << thread_id << "] write success" << endl;
@@ -553,12 +551,11 @@ namespace server {
     
             req_handler = [](const CLIENT_INFO& client_info, CLIENT_BUFFER& client_buffer, int flags) -> int {
                 smatch sm;
-                size_t buffer_size = RECV_BUFFER_SIZE;
-                char buffer[buffer_size] = {};
+                char buffer[RECV_BUFFER_SIZE] = {};
                 int ret;
     
                 // must drain the read buffer here
-                while (ret = recv(client_info.cfd, buffer, buffer_size, flags)) {
+                while (ret = recv(client_info.cfd, buffer, RECV_BUFFER_SIZE, flags)) {
                     if (ret < 0) {
                         if (errno = EAGAIN || errno == EWOULDBLOCK) {
                             //cerr << "No more data to read." << endl;
