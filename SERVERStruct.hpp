@@ -110,7 +110,7 @@ namespace server {
 
         // push new data into pipe
         void push(T& msg) {
-            assert(("pipe not inited", is_inited));
+            //assert(("pipe not inited", is_inited));
             // TODO: check result
             char data[sizeof(int)];
             msg.serialize(data);
@@ -122,7 +122,7 @@ namespace server {
 
         // push new data into pipe
         void push(T&& msg) {
-            assert(("pipe not inited", is_inited));
+            //assert(("pipe not inited", is_inited));
             // TODO: check result
             char data[sizeof(int)];
             msg.serialize(data);
@@ -168,7 +168,7 @@ namespace server {
             int ret;
 
             // drain the pipe buffer
-            while (ret = read(this->pipefd[0], buffer, bufsize)) {
+            while ((ret = read(this->pipefd[0], buffer, bufsize)) != 0) {
                 // TODO: check result
                 if (errno == EAGAIN || errno == EWOULDBLOCK) {
                     // errno is set only when error occurs, so we should reset it back to 0
